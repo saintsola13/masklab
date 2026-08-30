@@ -9,64 +9,37 @@
 <body>
   <div id="stage">
     <video id="cam" playsinline muted autoplay></video>
-    <img id="picked" alt="" />
     <canvas id="gl"></canvas>
     <canvas id="rec"></canvas>
     <div id="hud">
       <div id="brand">MASKLAB</div>
-      <div id="status">Tap Start camera</div>
+      <div id="status">1 / 4 — Start camera</div>
     </div>
     <div id="preview" hidden>
       <img id="preview-img" alt="Selected photo" />
       <div id="preview-meta">
-        <span id="preview-label">Photo ready</span>
+        <span id="preview-label">Cutout on face</span>
         <label id="cutout-wrap">
           Cutout
-          <input id="cutout" type="range" min="0" max="80" value="34" />
+          <input id="cutout" type="range" min="8" max="80" value="36" />
         </label>
       </div>
     </div>
     <div id="dock">
-      <button id="btn-cam" class="primary" type="button">Start camera</button>
-      <div class="file-btn">
-        Photos
-        <input id="file-photo" type="file" accept="image/*" />
+      <button id="btn-cam" class="primary" type="button">1. Start camera</button>
+      <div id="photo-btn" class="file-btn locked">
+        2. Photos
+        <input id="file-photo" type="file" accept="image/*" disabled />
       </div>
-      <div class="file-btn">
-        3D file
+      <button id="btn-rec" type="button" disabled>3. Record</button>
+      <button id="btn-stop" type="button" hidden>Stop & save</button>
+      <div class="file-btn ghost">
+        3D
         <input id="file-3d" type="file" accept=".glb,.gltf,.obj,model/gltf-binary,model/gltf+json" />
       </div>
-      <button id="btn-demo" type="button">Built-in mask</button>
-      <button id="btn-rec" type="button" disabled>Record</button>
-      <button id="btn-stop" type="button" hidden>Stop & save</button>
     </div>
     <div id="toast" hidden></div>
   </div>
-  <script>
-    (function () {
-      var photo = document.getElementById("file-photo");
-      var picked = document.getElementById("picked");
-      var preview = document.getElementById("preview");
-      var previewImg = document.getElementById("preview-img");
-      var previewLabel = document.getElementById("preview-label");
-      var statusEl = document.getElementById("status");
-      var toastEl = document.getElementById("toast");
-      photo.addEventListener("change", function () {
-        var file = photo.files && photo.files[0];
-        if (!file) return;
-        var url = URL.createObjectURL(file);
-        picked.src = url;
-        picked.className = "on";
-        preview.hidden = false;
-        previewImg.src = url;
-        previewLabel.textContent = file.name || "Photo selected";
-        statusEl.textContent = "Photo selected";
-        toastEl.hidden = false;
-        toastEl.textContent = "Photo selected";
-        setTimeout(function () { toastEl.hidden = true; }, 1600);
-      });
-    })();
-  </script>
   <script type="importmap">
   {
     "imports": {
