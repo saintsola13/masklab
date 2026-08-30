@@ -17,6 +17,9 @@ const btnRec = document.getElementById("btn-rec");
 const btnStop = document.getElementById("btn-stop");
 const photoInput = document.getElementById("file-photo");
 const meshInput = document.getElementById("file-3d");
+const previewEl = document.getElementById("preview");
+const previewImg = document.getElementById("preview-img");
+const previewLabel = document.getElementById("preview-label");
 
 const BLEND_MAP = {
   jawOpen: ["jawOpen", "mouthOpen", "MouthOpen"],
@@ -33,6 +36,7 @@ let running = false;
 let lastTs = -1;
 let recorder = null;
 let recChunks = [];
+let previewUrl = null;
 
 const renderer = new THREE.WebGLRenderer({
   canvas: glCanvas,
@@ -85,6 +89,26 @@ function stageH() {
 window.addEventListener("resize", resize);
 resize();
 
+function showIdlePose() {
+  maskRoot.position.set(0, 0, 0);
+  maskRoot.quaternion.identity();
+  maskRoot.scale.setScalar(1);
+  maskRoot.visible = true;
+}
+
+function setPreview(src, label) {
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = src || null;
+  if (src) {
+    previewImg.src = src;
+    previewLabel.textContent = label || "Photo ready";
+    previewEl.hidden = false;
+  } else {
+    previewImg.removeAttribute("src");
+    previewEl.hidden = true;
+  }
+}
+
 function clearMask() {
   while (maskRoot.children.length) {
     const obj = maskRoot.children[0];
@@ -92,7 +116,10 @@ function clearMask() {
       if (n.geometry) n.geometry.dispose();
       if (n.material) {
         const mats = Array.isArray(n.material) ? n.material : [n.material];
-        mats.forEach((m) => m.dispose?.());
+        mats.forEach((m) => {
+          if (m.map) m.map.dispose?.();
+          m.dispose?.();
+        });
       }
     });
     maskRoot.remove(obj);
@@ -154,10 +181,11 @@ function makeBuiltinMask() {
 
 function useBuiltin() {
   clearMask();
+  setPreview(null);
   const mask = makeBuiltinMask();
   maskRoot.add(mask);
-  maskRoot.visible = false;
-  setStatus("Built-in mask ready");
+  showIdlePose();
+  setStatus("Built-in mask ready — start camera to lock it");
 }
 
 function isImageFile(file) {
@@ -184,7 +212,7 @@ function loadPhotoMask(file) {
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.needsUpdate = true;
       const aspect = w / h;
-      const height = 0.28;
+      const height = 0.32;
       const mesh = new THREE.Mesh(
         new THREE.PlaneGeometry(height * aspect, height, 12, 12),
         new THREE.MeshBasicMaterial({
@@ -194,8 +222,7 @@ function loadPhotoMask(file) {
         })
       );
       mesh.position.z = 0.05;
-      URL.revokeObjectURL(url);
-      resolve(mesh);
+      resolve({ mesh, preview: url });
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -210,8 +237,11 @@ async function loadUserMesh(file) {
   const name = (file.name || "").toLowerCase();
   try {
     let object;
+    let preview = null;
     if (isImageFile(file)) {
-      object = await loadPhotoMask(file);
+      const loaded = await loadPhotoMask(file);
+      object = loaded.mesh;
+      preview = loaded.preview;
     } else if (name.endsWith(".obj")) {
       object = await new OBJLoader().loadAsync(url);
       object.traverse((n) => {
@@ -232,9 +262,14 @@ async function loadUserMesh(file) {
     }
     clearMask();
     maskRoot.add(object);
-    maskRoot.visible = false;
-    setStatus("Mask loaded — look at camera");
-    toast(isImageFile(file) ? "Photo locked to face" : "Mask fitted to face mesh");
+    showIdlePose();
+    if (preview) {
+      setPreview(preview, file.name || "Photo ready");
+    } else {
+      setPreview(null);
+    }
+    setStatus(running ? "Photo on face — look at camera" : "Photo loaded — start camera to lock it");
+    toast(isImageFile(file) ? "Photo on screen" : "Mask fitted");
   } catch (err) {
     console.error(err);
     toast("Could not load that file");
@@ -291,10 +326,7 @@ function applyBlendshapes(result) {
 
 function applyPose(result) {
   const mats = result.facialTransformationMatrixes;
-  if (!mats?.length) {
-    maskRoot.visible = false;
-    return;
-  }
+  if (!mats?.length) return;
   const m = new THREE.Matrix4().fromArray(mats[0].data);
   const s = new THREE.Vector3();
   const r = new THREE.Quaternion();
@@ -348,13 +380,11 @@ async function startCamera() {
   btnCam.textContent = "Camera on";
   btnRec.disabled = false;
   setStatus("Tracking face");
-  loop();
 }
 
 function loop() {
-  if (!running) return;
   const ts = performance.now();
-  if (video.readyState >= 2 && landmarker && ts !== lastTs) {
+  if (running && video.readyState >= 2 && landmarker && ts !== lastTs) {
     lastTs = ts;
     const result = landmarker.detectForVideo(video, ts);
     applyPose(result);
@@ -421,4 +451,5 @@ photoInput.addEventListener("change", () => onPicked(photoInput));
 meshInput.addEventListener("change", () => onPicked(meshInput));
 
 useBuiltin();
-setStatus("Tap Start camera");
+loop();
+setStatus("Tap Start camera or pick a photo");
