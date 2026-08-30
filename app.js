@@ -293,12 +293,20 @@ async function startCamera() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
+      audio: { echoCancellation: true, noiseSuppression: true },
     });
   } catch (err) {
-    setStatus("Allow camera access");
-    toast("Camera permission blocked");
-    return;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: false,
+      });
+      toast("Mic blocked — video only");
+    } catch (err2) {
+      setStatus("Allow camera access");
+      toast("Camera permission blocked");
+      return;
+    }
   }
   video.srcObject = stream;
   await video.play();
@@ -307,7 +315,7 @@ async function startCamera() {
   btnCam.textContent = "Camera on";
   unlockPhotos();
   setStatus("Face mapping — look at camera, then pick a photo");
-  toast("Face map on — pick a photo");
+  toast(stream.getAudioTracks().length ? "Camera + mic on" : "Camera on");
 }
 
 function attach() {
@@ -357,10 +365,13 @@ function loop() {
 }
 
 function pickRecorder() {
-  const types = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
+  const types = ["video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
   const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
-  const streamOut = recCanvas.captureStream(30);
-  return mime ? new MediaRecorder(streamOut, { mimeType: mime }) : new MediaRecorder(streamOut);
+  const canvasStream = recCanvas.captureStream(30);
+  const tracks = [...canvasStream.getVideoTracks()];
+  if (stream) tracks.push(...stream.getAudioTracks());
+  const mixed = new MediaStream(tracks);
+  return mime ? new MediaRecorder(mixed, { mimeType: mime }) : new MediaRecorder(mixed);
 }
 
 function startRec() {
@@ -374,11 +385,14 @@ function startRec() {
   recorder.ondataavailable = (e) => {
     if (e.data.size) recChunks.push(e.data);
   };
-  recorder.onstop = saveRec;
-  recorder.start();
+  recorder.onstop = () => {
+    saveRec();
+  };
+  recorder.start(250);
   btnRec.hidden = true;
   btnStop.hidden = false;
-  setStatus("Recording…");
+  btnStop.textContent = "Stop & save to Photos";
+  setStatus("Recording with audio…");
 }
 
 function stopRec() {
@@ -387,15 +401,37 @@ function stopRec() {
   btnStop.hidden = true;
 }
 
-function saveRec() {
-  const type = recorder.mimeType || "video/webm";
+async function saveRec() {
+  const rawType = recorder.mimeType || "video/mp4";
+  const isMp4 = rawType.includes("mp4");
+  const type = isMp4 ? "video/mp4" : rawType.split(";")[0] || "video/webm";
+  const ext = isMp4 ? "mp4" : "webm";
   const blob = new Blob(recChunks, { type });
+  const file = new File([blob], `masklab-${Date.now()}.${ext}`, { type });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: "MASKLAB",
+        text: "Save Video to Photos",
+      });
+      setStatus("Share sheet — tap Save Video");
+      toast("Tap Save Video to put it in Photos");
+      return;
+    }
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      setStatus("Save canceled");
+      return;
+    }
+  }
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `masklab-${Date.now()}.${type.includes("mp4") ? "mp4" : "webm"}`;
+  a.href = url;
+  a.download = file.name;
   a.click();
-  setStatus("Saved recording");
-  toast("Video downloaded");
+  setStatus("Saved — if it went to Files, open it and share to Photos");
+  toast("Saved file — Share → Save Video");
 }
 
 btnCam.addEventListener("click", startCamera);
