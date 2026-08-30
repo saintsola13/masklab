@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <title>M4SK</title>
-  <link rel="stylesheet" href="styles.css?v=5" />
+  <link rel="stylesheet" href="styles.css?v=6" />
 </head>
 <body>
   <div id="stage">
@@ -38,6 +38,25 @@
       </div>
     </div>
     <div id="library" hidden></div>
+
+    <!-- VOICE FX PANEL -->
+    <div id="vfx-panel" hidden>
+      <div class="vfx-title">VOICE FX</div>
+      <label class="vfx-row">
+        <span class="vfx-label">PITCH</span>
+        <input id="vfx-pitch" type="range" min="-12" max="12" value="0" step="1" />
+        <span class="vfx-val" id="vfx-pitch-val">0</span>
+      </label>
+      <label class="vfx-row vfx-toggle-row">
+        <span class="vfx-label">ROBOT</span>
+        <button id="vfx-robot" class="vfx-btn" type="button">OFF</button>
+      </label>
+      <label class="vfx-row vfx-toggle-row">
+        <span class="vfx-label">REVERB</span>
+        <button id="vfx-reverb" class="vfx-btn" type="button">OFF</button>
+      </label>
+    </div>
+
     <div id="save-sheet" hidden>
       <video id="save-video" playsinline controls></video>
       <p id="save-hint">Tap Save to Photos, or hold the video and choose Save Video</p>
@@ -52,11 +71,12 @@
       </div>
       <button id="btn-attach" type="button" disabled>3. Attach</button>
       <button id="btn-lock" type="button" disabled>4. Lock</button>
-      <button id="btn-rec" type="button" disabled>5. Record</button>
+      <button id="btn-vfx" type="button" disabled>🎙 Voice FX</button>
+      <button id="btn-rec" type="button" disabled>6. Record</button>
       <button id="btn-stop" type="button" hidden>Stop & save</button>
     </div>
     <div id="toast" hidden></div>
   </div>
-  <script type="module" src="app.js?v=5"></script>
+  <script type="module" src="app.js?v=6"></script>
 </body>
 </html>
