@@ -57,6 +57,25 @@ function unlockPhotos() {
   photoInput.disabled = false;
 }
 
+function coverRect() {
+  const cw = view.width;
+  const ch = view.height;
+  const vw = video.videoWidth || cw;
+  const vh = video.videoHeight || ch;
+  const scale = Math.max(cw / vw, ch / vh);
+  const dw = vw * scale;
+  const dh = vh * scale;
+  return { cw, ch, vw, vh, scale, dw, dh, ox: (cw - dw) / 2, oy: (ch - dh) / 2 };
+}
+
+function toCanvas(p) {
+  const { dw, dh, ox, oy } = coverRect();
+  return {
+    x: ox + (1 - p.x) * dw,
+    y: oy + p.y * dh,
+  };
+}
+
 function sampleBg(data, w, h) {
   const pts = [0, (w - 1) * 4, (h - 1) * w * 4, ((h - 1) * w + (w - 1)) * 4];
   let r = 0, g = 0, b = 0;
@@ -173,55 +192,68 @@ async function decodePhoto(file) {
   }
 }
 
-function pt(landmarks, i, w, h) {
-  const p = landmarks[i];
-  return { x: (1 - p.x) * w, y: p.y * h };
+function faceFit(landmarks) {
+  const forehead = toCanvas(landmarks[10]);
+  const chin = toCanvas(landmarks[152]);
+  const cheekA = toCanvas(landmarks[234]);
+  const cheekB = toCanvas(landmarks[454]);
+  const nose = toCanvas(landmarks[1]);
+  let left = cheekA;
+  let right = cheekB;
+  if (left.x > right.x) {
+    left = cheekB;
+    right = cheekA;
+  }
+  const width = Math.hypot(right.x - left.x, right.y - left.y) * 1.72;
+  const height = Math.hypot(chin.x - forehead.x, chin.y - forehead.y) * 1.18;
+  let angle = Math.atan2(right.y - left.y, right.x - left.x);
+  if (angle > Math.PI / 2) angle -= Math.PI;
+  if (angle < -Math.PI / 2) angle += Math.PI;
+  return {
+    cx: nose.x,
+    cy: (forehead.y * 0.35 + chin.y * 0.65),
+    width,
+    height,
+    angle,
+  };
 }
 
-function faceBox(landmarks, w, h) {
-  const forehead = pt(landmarks, 10, w, h);
-  const chin = pt(landmarks, 152, w, h);
-  const left = pt(landmarks, 234, w, h);
-  const right = pt(landmarks, 454, w, h);
-  const cx = (left.x + right.x) * 0.5;
-  const cy = (forehead.y + chin.y) * 0.5;
-  const width = Math.hypot(right.x - left.x, right.y - left.y) * 1.35;
-  const height = Math.hypot(chin.x - forehead.x, chin.y - forehead.y) * 1.25;
-  const angle = Math.atan2(right.y - left.y, right.x - left.x);
-  return { cx, cy, width, height, angle };
+function coverSize(box, imgW, imgH, talk) {
+  const aspect = imgW / Math.max(imgH, 1);
+  const bw = box.width;
+  const bh = box.height * talk;
+  let dw = bw;
+  let dh = dw / aspect;
+  if (dh < bh) {
+    dh = bh;
+    dw = dh * aspect;
+  }
+  return { dw, dh };
 }
 
 function drawVideo() {
-  const w = view.width;
-  const h = view.height;
+  const { cw, ch, dw, dh, ox, oy } = coverRect();
   ctx.save();
-  ctx.translate(w, 0);
+  ctx.translate(cw, 0);
   ctx.scale(-1, 1);
-  const vw = video.videoWidth || w;
-  const vh = video.videoHeight || h;
-  const scale = Math.max(w / vw, h / vh);
-  const dw = vw * scale;
-  const dh = vh * scale;
-  ctx.drawImage(video, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  ctx.drawImage(video, cw - ox - dw, oy, dw, dh);
   ctx.restore();
 }
 
 function drawMap() {
   if (!face) return;
-  const w = view.width;
-  const h = view.height;
-  ctx.fillStyle = "rgba(80,220,255,0.9)";
-  for (let i = 0; i < face.length; i += 3) {
-    const p = pt(face, i, w, h);
+  ctx.fillStyle = "rgba(80,220,255,0.95)";
+  for (let i = 0; i < face.length; i += 4) {
+    const p = toCanvas(face[i]);
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
     ctx.fill();
   }
-  const box = faceBox(face, w, h);
+  const box = faceFit(face);
   ctx.save();
   ctx.translate(box.cx, box.cy);
   ctx.rotate(box.angle);
-  ctx.strokeStyle = "rgba(255,255,255,0.85)";
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
   ctx.lineWidth = 3;
   ctx.strokeRect(-box.width / 2, -box.height / 2, box.width, box.height);
   ctx.restore();
@@ -229,23 +261,13 @@ function drawMap() {
 
 function drawMask() {
   if (!attached || !cutout || !face) return;
-  const w = view.width;
-  const h = view.height;
-  const box = faceBox(face, w, h);
-  const talk = 1 + jaw * 0.18;
+  const box = faceFit(face);
+  const talk = 1 + jaw * 0.12;
+  const { dw, dh } = coverSize(box, cutout.width, cutout.height, talk);
   ctx.save();
   ctx.translate(box.cx, box.cy);
   ctx.rotate(box.angle);
-  const aspect = cutout.width / Math.max(cutout.height, 1);
-  let mw = box.width;
-  let mh = mw / aspect;
-  if (mh < box.height) {
-    mh = box.height * talk;
-    mw = mh * aspect;
-  } else {
-    mh *= talk;
-  }
-  ctx.drawImage(cutout, -mw / 2, -mh / 2, mw, mh);
+  ctx.drawImage(cutout, -dw / 2, -dh / 2, dw, dh);
   ctx.restore();
 }
 
@@ -338,11 +360,7 @@ function loop() {
 }
 
 function pickRecorder() {
-  const types = [
-    "video/mp4",
-    "video/webm;codecs=vp9",
-    "video/webm",
-  ];
+  const types = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
   const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
   const streamOut = recCanvas.captureStream(30);
   return mime ? new MediaRecorder(streamOut, { mimeType: mime }) : new MediaRecorder(streamOut);
@@ -397,7 +415,7 @@ photoInput.addEventListener("change", async () => {
     previewLabel.textContent = "Cutout ready — Attach";
     btnAttach.disabled = false;
     attached = false;
-    setStatus(face ? "3 / 5 — Tap Attach" : "Look at camera, then Attach");
+    setStatus(face ? "Tap Attach" : "Look at camera, then Attach");
     toast("Photo cut out — tap Attach");
   } catch (err) {
     console.error(err);
