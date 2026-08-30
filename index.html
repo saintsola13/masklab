@@ -9,6 +9,7 @@
 <body>
   <div id="stage">
     <video id="cam" playsinline muted autoplay></video>
+    <img id="picked" alt="" />
     <canvas id="gl"></canvas>
     <canvas id="rec"></canvas>
     <div id="hud">
@@ -26,19 +27,15 @@
       </div>
     </div>
     <div id="dock">
-      <button id="btn-cam" class="primary">Start camera</button>
-      <label class="btn">
-        Photos
-        <input id="file-photo" type="file" accept="image/*" />
-      </label>
-      <label class="btn">
-        3D file
-        <input id="file-3d" type="file" accept=".glb,.gltf,.obj,model/gltf-binary,model/gltf+json" />
-      </label>
-      <button id="btn-demo">Built-in mask</button>
-      <button id="btn-rec" disabled>Record</button>
-      <button id="btn-stop" hidden>Stop & save</button>
+      <button id="btn-cam" class="primary" type="button">Start camera</button>
+      <button id="btn-photo" type="button">Photos</button>
+      <button id="btn-3d" type="button">3D file</button>
+      <button id="btn-demo" type="button">Built-in mask</button>
+      <button id="btn-rec" type="button" disabled>Record</button>
+      <button id="btn-stop" type="button" hidden>Stop & save</button>
     </div>
+    <input id="file-photo" type="file" accept="image/*" />
+    <input id="file-3d" type="file" accept=".glb,.gltf,.obj,model/gltf-binary,model/gltf+json" />
     <div id="toast" hidden></div>
   </div>
   <script type="importmap">
