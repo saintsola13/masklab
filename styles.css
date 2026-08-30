@@ -66,7 +66,7 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   font-size: 11px;
   color: rgba(255,255,255,0.7);
 }
-#cutout { width: 110px; accent-color: #fff; }
+#cutout, #size, #nudge, #slide { width: 110px; accent-color: #fff; }
 #dock {
   position: absolute;
   left: 12px;
@@ -117,4 +117,29 @@ button[disabled], .file-btn.locked {
   z-index: 5;
   max-width: 80%;
   text-align: center;
+}
+#save-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  background: rgba(0,0,0,0.88);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 16px max(24px, env(safe-area-inset-bottom));
+}
+#save-sheet[hidden] { display: none; }
+#save-video {
+  width: min(100%, 420px);
+  max-height: 52dvh;
+  background: #111;
+  border-radius: 12px;
+}
+#save-hint {
+  font-size: 13px;
+  color: rgba(255,255,255,0.8);
+  text-align: center;
+  max-width: 320px;
 }
