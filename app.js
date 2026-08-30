@@ -8,7 +8,6 @@ const btnAttach = document.getElementById("btn-attach");
 const btnLock = document.getElementById("btn-lock");
 const btnRec = document.getElementById("btn-rec");
 const btnStop = document.getElementById("btn-stop");
-const btnVfx = document.getElementById("btn-vfx");
 const photoBtn = document.getElementById("photo-btn");
 const filePhoto = document.getElementById("file-photo");
 const previewEl = document.getElementById("preview");
@@ -23,11 +22,6 @@ const saveVideo = document.getElementById("save-video");
 const btnSavePhotos = document.getElementById("btn-save-photos");
 const btnSaveClose = document.getElementById("btn-save-close");
 const libraryEl = document.getElementById("library");
-const vfxPanel = document.getElementById("vfx-panel");
-const vfxPitchEl = document.getElementById("vfx-pitch");
-const vfxPitchVal = document.getElementById("vfx-pitch-val");
-const vfxRobotBtn = document.getElementById("vfx-robot");
-const vfxReverbBtn = document.getElementById("vfx-reverb");
 
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
@@ -48,237 +42,49 @@ let recChunks = [];
 let lastFile = null;
 let lastUrl = null;
 
-// ── VOICE FX STATE ────────────────────────────────────────────────────────────
-let audioCtx      = null;
-let micSource     = null;
-let fxDest        = null;
-let robotOsc      = null;
-let robotRing     = null;
-let reverbNode    = null;
-let reverbWet     = null;
-let reverbDry     = null;
-let vfxOn         = false;
-let robotOn       = false;
-let reverbOn      = false;
-let pitchSemitones = 0;
-
-function buildAudioGraph() {
-  if (!stream || !stream.getAudioTracks().length) return false;
-
-  audioCtx  = new (window.AudioContext || window.webkitAudioContext)();
-  micSource = audioCtx.createMediaStreamSource(stream);
-  fxDest    = audioCtx.createMediaStreamDestination();
-
-  // ── Silent node to destination ────────────────────────────────────────────
-  // Web Audio REQUIRES a path to destination for the graph to process.
-  // We connect a gain=0 node so the engine runs but speakers hear nothing.
-  const silentGain = audioCtx.createGain();
-  silentGain.gain.value = 0;
-  silentGain.connect(audioCtx.destination);
-
-  // ── Pitch (formant shift via shelf filters) ───────────────────────────────
-  // True semitone shift needs AudioWorklet. Shelf filters give a convincing
-  // deep/high voice effect that's lightweight and works on all mobile browsers.
-  const lowShelf  = audioCtx.createBiquadFilter();
-  lowShelf.type   = "lowshelf";
-  lowShelf.frequency.value = 350;
-  lowShelf.gain.value = 0;
-
-  const highShelf  = audioCtx.createBiquadFilter();
-  highShelf.type   = "highshelf";
-  highShelf.frequency.value = 2200;
-  highShelf.gain.value = 0;
-
-  // ── Ring modulator (robot) ────────────────────────────────────────────────
-  // Oscillator modulates robotRing.gain AudioParam only.
-  // Never injected into signal path — no feedback.
-  robotRing = audioCtx.createGain();
-  robotRing.gain.value = 1; // unity = robot off
-
-  robotOsc = audioCtx.createOscillator();
-  robotOsc.type = "sine";
-  robotOsc.frequency.value = 80;
-  robotOsc.start();
-
-  const oscMod = audioCtx.createGain();
-  oscMod.gain.value = 1;
-  robotOsc.connect(oscMod);
-  audioCtx._oscMod = oscMod;  // saved for toggle connect/disconnect
-
-  // ── Reverb ────────────────────────────────────────────────────────────────
-  reverbNode = audioCtx.createConvolver();
-  reverbNode.buffer = makeIR(audioCtx, 2.2, 3.5);
-  reverbWet = audioCtx.createGain();
-  reverbDry = audioCtx.createGain();
-  reverbWet.gain.value = 0;
-  reverbDry.gain.value = 1;
-
-  // ── Graph ─────────────────────────────────────────────────────────────────
-  //
-  //  mic → lowShelf → highShelf → robotRing → reverbDry ──→ fxDest
-  //                                          ↘ reverbNode → reverbWet → fxDest
-  //                                          ↘ silentGain (gain=0) → destination
-  //
-  //  oscMod → robotRing.gain  [ring modulator, no signal injection]
-  //
-  micSource.connect(lowShelf);
-  lowShelf.connect(highShelf);
-  highShelf.connect(robotRing);
-  robotRing.connect(reverbDry);
-  robotRing.connect(reverbNode);
-  robotRing.connect(silentGain);  // keeps audio engine alive
-  reverbDry.connect(fxDest);
-  reverbNode.connect(reverbWet);
-  reverbWet.connect(fxDest);
-
-  audioCtx._lowShelf  = lowShelf;
-  audioCtx._highShelf = highShelf;
-
-  return true;
-}
-
-function makeIR(ctx, duration, decay) {
-  const len = Math.round(ctx.sampleRate * duration);
-  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
-  for (let c = 0; c < 2; c++) {
-    const ch = buf.getChannelData(c);
-    for (let i = 0; i < len; i++)
-      ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
-  }
-  return buf;
-}
-
-function toggleVfxPanel() {
-  if (!running) { toast("Start camera first"); return; }
-  if (!stream?.getAudioTracks().length) { toast("No mic — FX needs mic"); return; }
-
-  vfxOn = !vfxOn;
-  vfxPanel.hidden = !vfxOn;
-  btnVfx.textContent = vfxOn ? "🎙 FX ON" : "🎙 FX";
-  btnVfx.classList.toggle("fx-active", vfxOn);
-
-  if (vfxOn && !audioCtx) {
-    const ok = buildAudioGraph();
-    if (!ok) { vfxOn = false; vfxPanel.hidden = true; toast("No mic"); return; }
-    audioCtx.resume(); // required on mobile after user gesture
-    toast("Voice FX on");
-  } else if (vfxOn && audioCtx) {
-    audioCtx.resume();
-  } else if (!vfxOn && audioCtx) {
-    audioCtx.suspend();
-  }
-}
-
-function toggleRobot() {
-  if (!audioCtx) { toast("Turn on FX first"); return; }
-  robotOn = !robotOn;
-  vfxRobotBtn.textContent = robotOn ? "ON" : "OFF";
-  vfxRobotBtn.style.color = robotOn ? "#ff2a3a" : "";
-  vfxRobotBtn.style.borderColor = robotOn ? "rgba(255,42,58,0.7)" : "";
-  if (robotOn) {
-    robotRing.gain.setValueAtTime(0, audioCtx.currentTime);
-    audioCtx._oscMod.connect(robotRing.gain); // ring mod ON
-    robotOsc.frequency.value = 80;
-  } else {
-    try { audioCtx._oscMod.disconnect(robotRing.gain); } catch(_) {}
-    robotRing.gain.setValueAtTime(1, audioCtx.currentTime); // bypass
-  }
-  toast(robotOn ? "Robot on" : "Robot off");
-}
-
-function toggleReverb() {
-  if (!audioCtx) { toast("Turn on FX first"); return; }
-  reverbOn = !reverbOn;
-  vfxReverbBtn.textContent = reverbOn ? "ON" : "OFF";
-  vfxReverbBtn.style.color = reverbOn ? "#ff2a3a" : "";
-  vfxReverbBtn.style.borderColor = reverbOn ? "rgba(255,42,58,0.7)" : "";
-  reverbWet.gain.setTargetAtTime(reverbOn ? 0.7 : 0,  audioCtx.currentTime, 0.05);
-  reverbDry.gain.setTargetAtTime(reverbOn ? 0.4 : 1,  audioCtx.currentTime, 0.05);
-  toast(reverbOn ? "Reverb on" : "Reverb off");
-}
-
-vfxPitchEl.addEventListener("input", () => {
-  pitchSemitones = Number(vfxPitchEl.value);
-  vfxPitchVal.textContent = pitchSemitones > 0 ? `+${pitchSemitones}` : String(pitchSemitones);
-  if (!audioCtx) return;
-  // Negative = deeper: boost lows, cut highs. Positive = higher: opposite.
-  const s = pitchSemitones;
-  audioCtx._lowShelf.gain.setTargetAtTime(s * -3,  audioCtx.currentTime, 0.05);
-  audioCtx._highShelf.gain.setTargetAtTime(s * 3,  audioCtx.currentTime, 0.05);
-});
-vfxRobotBtn.addEventListener("click", toggleRobot);
-vfxReverbBtn.addEventListener("click", toggleReverb);
-btnVfx.addEventListener("click", toggleVfxPanel);
-
-// ── Pick audio source for recorder: FX chain if active, raw mic otherwise ──
-function getAudioTracks() {
-  if (vfxOn && fxDest) return fxDest.stream.getAudioTracks();
-  if (stream) return stream.getAudioTracks();
-  return [];
-}
-
-// ── Blendshape helper ─────────────────────────────────────────────────────────
 function getBlend(name) {
   if (!blendshapes) return 0;
   const cat = blendshapes.find(c => c.categoryName === name);
   return cat ? cat.score : 0;
 }
 
-// ── Warp cutout in its own pixel space (no rotation glitch) ──────────────────
 function warpCutoutImage(box) {
-  const W = cutout.width;
-  const H = cutout.height;
-
+  const W = cutout.width, H = cutout.height;
   const blink = Math.min(1, Math.max(getBlend("eyeBlinkLeft"), getBlend("eyeBlinkRight")) * 1.6);
   const jaw   = Math.min(1, getBlend("jawOpen") * 2.0);
-
   if (blink < 0.03 && jaw < 0.03) return cutout;
-
-  const maskTop = box.cy - box.dh / 2;
-  const maskH   = box.dh;
-
+  const maskTop = box.cy - box.dh / 2, maskH = box.dh;
   function lmUV(idx) {
     if (!face?.[idx]) return null;
     const { dh, oy } = coverRect();
     return (oy + face[idx].y * dh - maskTop) / maskH;
   }
-
   const eyeUVs = [lmUV(159), lmUV(145), lmUV(386), lmUV(374)].filter(v => v !== null);
   const eyeTopUV = eyeUVs.length ? Math.max(0.05, Math.min(...eyeUVs) - 0.03) : 0.22;
   const eyeBotUV = eyeUVs.length ? Math.min(0.95, Math.max(...eyeUVs) + 0.03) : 0.36;
-
   const mTopUV = lmUV(13) !== null ? Math.max(0.05, lmUV(13) - 0.04) : 0.60;
   const mBotUV = lmUV(14) !== null ? Math.min(0.95, lmUV(14) + 0.06) : 0.74;
-
   const eyeTopPx = eyeTopUV * H, eyeBotPx = eyeBotUV * H;
-  const mTopPx   = mTopUV   * H, mBotPx   = mBotUV   * H;
+  const mTopPx = mTopUV * H, mBotPx = mBotUV * H;
   const eyeBandH = Math.max(1, eyeBotPx - eyeTopPx);
-  const mBandH   = Math.max(1, mBotPx   - mTopPx);
-
+  const mBandH   = Math.max(1, mBotPx - mTopPx);
   const eyeSquish = 1 - blink * 0.90;
-  const mStretch  = 1 + jaw   * 0.55;
-
-  const eyeDelta = eyeBandH * eyeSquish - eyeBandH;
-  const mDelta   = mBandH   * mStretch  - mBandH;
-  const newH     = Math.max(1, Math.round(H + eyeDelta + mDelta));
-
+  const mStretch  = 1 + jaw * 0.55;
+  const newH = Math.max(1, Math.round(H + (eyeBandH * eyeSquish - eyeBandH) + (mBandH * mStretch - mBandH)));
   const out = document.createElement("canvas");
   out.width = W; out.height = newH;
   const oc = out.getContext("2d");
-
   let destY = 0;
   function blitBand(srcY, srcH, dstH) {
     if (srcH <= 0 || dstH <= 0) return;
     oc.drawImage(cutout, 0, srcY, W, srcH, 0, destY, W, dstH);
     destY += dstH;
   }
-
-  blitBand(0,        eyeTopPx,             eyeTopPx);
-  blitBand(eyeTopPx, eyeBandH,             eyeBandH * eyeSquish);
-  blitBand(eyeBotPx, mTopPx - eyeBotPx,   mTopPx - eyeBotPx);
-  blitBand(mTopPx,   mBandH,              mBandH  * mStretch);
-  blitBand(mBotPx,   H - mBotPx,          H - mBotPx);
-
+  blitBand(0, eyeTopPx, eyeTopPx);
+  blitBand(eyeTopPx, eyeBandH, eyeBandH * eyeSquish);
+  blitBand(eyeBotPx, mTopPx - eyeBotPx, mTopPx - eyeBotPx);
+  blitBand(mTopPx, mBandH, mBandH * mStretch);
+  blitBand(mBotPx, H - mBotPx, H - mBotPx);
   return out;
 }
 
@@ -295,7 +101,6 @@ function drawMaskAnimated() {
   ctx.restore();
 }
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
 function setStatus(t) { statusEl.textContent = t; }
 function toast(t, ms = 1800) {
   toastEl.hidden = false; toastEl.textContent = t;
@@ -508,7 +313,6 @@ async function startCamera() {
   running = true;
   btnCam.textContent = "Camera on";
   unlockPhotos();
-  btnVfx.disabled = false;
   setStatus("Face mapping — look at camera, then pick a photo");
   toast("Camera on");
 }
@@ -550,22 +354,19 @@ function pickMime() {
   return types.find(t=>MediaRecorder.isTypeSupported(t))||"";
 }
 function pickRecorder() {
-  const mime=pickMime();
-  const canvasStream=recCanvas.captureStream(30);
-  const audioTracks = getAudioTracks();
-  const tracks=[...canvasStream.getVideoTracks(), ...audioTracks];
-  const mixed=new MediaStream(tracks);
-  return mime?new MediaRecorder(mixed,{mimeType:mime}):new MediaRecorder(mixed);
+  const mime = pickMime();
+  const canvasStream = recCanvas.captureStream(30);
+  const tracks = [...canvasStream.getVideoTracks()];
+  if (stream) tracks.push(...stream.getAudioTracks());
+  const mixed = new MediaStream(tracks);
+  return mime ? new MediaRecorder(mixed, { mimeType: mime }) : new MediaRecorder(mixed);
 }
 function startRec() {
   if (!attached||!running||!locked) { toast("Lock the fit first"); return; }
-  // Resume AudioContext if suspended (mobile autoplay policy)
-  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
   recChunks=[]; compositeTo(recCtx); recorder=pickRecorder();
   recorder.ondataavailable=e=>{ if(e.data&&e.data.size) recChunks.push(e.data); };
   recorder.start(200); btnRec.hidden=true; btnStop.hidden=false;
-  btnStop.textContent="Stop & save";
-  setStatus(vfxOn ? "Recording w/ Voice FX…" : "Recording…");
+  btnStop.textContent="Stop & save"; setStatus("Recording…");
 }
 function makeFile() {
   const raw=recorder?.mimeType||recChunks[0]?.type||"video/mp4";
