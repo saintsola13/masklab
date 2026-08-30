@@ -177,9 +177,8 @@ function toggleVfxPanel() {
 
   vfxOn = !vfxOn;
   vfxPanel.hidden = !vfxOn;
-  btnVfx.textContent = vfxOn ? "🎙 FX ON" : "🎙 Voice FX";
-  btnVfx.style.borderColor = vfxOn ? "rgba(255,42,58,0.8)" : "";
-  btnVfx.style.color = vfxOn ? "#ff2a3a" : "";
+  btnVfx.textContent = vfxOn ? "🎙 FX ON" : "🎙 FX";
+  btnVfx.classList.toggle("fx-active", vfxOn);
 
   if (vfxOn && !audioCtx) {
     const ok = buildAudioGraph();
