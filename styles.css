@@ -50,19 +50,42 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   border-radius: 14px;
   padding: 6px 10px 6px 6px;
   backdrop-filter: blur(10px);
+  max-width: calc(100% - 32px);
 }
 #preview[hidden] { display: none; }
 #preview-img {
   width: 56px;
   height: 56px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 8px;
-  background: #222;
+  background:
+    linear-gradient(45deg, #333 25%, transparent 25%) 0 0 / 10px 10px,
+    linear-gradient(45deg, transparent 75%, #333 75%) 0 0 / 10px 10px,
+    linear-gradient(45deg, #333 25%, transparent 25%) 5px 5px / 10px 10px,
+    linear-gradient(45deg, transparent 75%, #333 75%) 5px 5px / 10px 10px,
+    #111;
   display: block;
+}
+#preview-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 120px;
 }
 #preview-label {
   font-size: 12px;
   color: rgba(255,255,255,0.85);
+}
+#cutout-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.7);
+}
+#cutout {
+  width: 110px;
+  accent-color: #fff;
 }
 #dock {
   position: absolute;
