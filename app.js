@@ -17,12 +17,13 @@ const cutoutInput = document.getElementById("cutout");
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
 
+const OVAL = [10, 109, 67, 103, 54, 21, 162, 127, 234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454, 356, 389, 251, 284, 332, 297, 338];
+
 let landmarker = null;
 let stream = null;
 let running = false;
 let lastTs = -1;
 let face = null;
-let blends = {};
 let photoSource = null;
 let cutout = null;
 let attached = false;
@@ -188,21 +189,26 @@ async function decodePhoto(file) {
 }
 
 function faceFit(landmarks) {
-  const forehead = toCanvas(landmarks[10]);
-  const chin = toCanvas(landmarks[152]);
+  const pts = OVAL.map((i) => toCanvas(landmarks[i]));
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
   const a = toCanvas(landmarks[234]);
   const b = toCanvas(landmarks[454]);
-  const nose = toCanvas(landmarks[1]);
   const left = a.x < b.x ? a : b;
   const right = a.x < b.x ? b : a;
-  const width = Math.hypot(right.x - left.x, right.y - left.y) * 2.2;
-  const height = Math.hypot(chin.x - forehead.x, chin.y - forehead.y) * 1.55;
   let angle = Math.atan2(right.y - left.y, right.x - left.x);
   if (angle > Math.PI / 2) angle -= Math.PI;
   if (angle < -Math.PI / 2) angle += Math.PI;
+  const width = (maxX - minX) * 1.18;
+  const height = (maxY - minY) * 1.16;
   return {
-    cx: nose.x,
-    cy: forehead.y * 0.32 + chin.y * 0.68,
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2,
     width,
     height,
     angle,
@@ -237,13 +243,6 @@ function drawMap() {
   ctx.restore();
 }
 
-function drawBand(img, dx, dy, dw, dh, sy0, sy1, destY, destH) {
-  const sh = img.height;
-  const srcY = sy0 * sh;
-  const srcH = Math.max(1, (sy1 - sy0) * sh);
-  ctx.drawImage(img, 0, srcY, img.width, srcH, dx, destY, dw, destH);
-}
-
 function drawMask() {
   if (!attached || !cutout || !face) return;
   const box = faceFit(face);
@@ -254,49 +253,15 @@ function drawMask() {
     dh = box.height;
     dw = dh * aspect;
   }
-  const jaw = Math.min(1, blends.jawOpen || 0);
-  const blinkL = Math.min(1, blends.eyeBlinkLeft || 0);
-  const blinkR = Math.min(1, blends.eyeBlinkRight || 0);
-  const blink = Math.max(blinkL, blinkR);
-
-  const dx = -dw / 2;
-  const dy = -dh / 2;
-  const eyeStart = 0.28;
-  const eyeEnd = 0.48;
-  const mouthStart = 0.58;
-
   ctx.save();
   ctx.translate(box.cx, box.cy);
   ctx.rotate(box.angle);
-
-  const topH = dh * eyeStart;
-  drawBand(cutout, dx, dy, dw, dh, 0, eyeStart, dy, topH);
-
-  const eyeH = dh * (eyeEnd - eyeStart);
-  const eyeSquash = 1 - blink * 0.78;
-  const eyeDrawH = eyeH * eyeSquash;
-  const eyeY = dy + topH + (eyeH - eyeDrawH) * 0.55;
-  drawBand(cutout, dx, dy, dw, dh, eyeStart, eyeEnd, eyeY, eyeDrawH);
-
-  const midH = dh * (mouthStart - eyeEnd);
-  drawBand(cutout, dx, dy, dw, dh, eyeEnd, mouthStart, dy + topH + eyeH, midH);
-
-  const mouthH = dh * (1 - mouthStart);
-  const mouthStretch = 1 + jaw * 0.55;
-  drawBand(cutout, dx, dy, dw, dh, mouthStart, 1, dy + topH + eyeH + midH, mouthH * mouthStretch);
-
+  ctx.drawImage(cutout, -dw / 2, -dh / 2, dw, dh);
   ctx.restore();
 }
 
 function compositeTo(target) {
   target.drawImage(view, 0, 0);
-}
-
-function readBlend(result) {
-  blends = {};
-  const cats = result.faceBlendshapes?.[0]?.categories;
-  if (!cats) return;
-  for (const c of cats) blends[c.categoryName] = c.score;
 }
 
 async function initTracker() {
@@ -313,7 +278,7 @@ async function initTracker() {
     },
     runningMode: "VIDEO",
     numFaces: 1,
-    outputFaceBlendshapes: true,
+    outputFaceBlendshapes: false,
     outputFacialTransformationMatrixes: false,
   });
 }
@@ -351,7 +316,7 @@ function attach() {
   }
   attached = true;
   btnRec.disabled = false;
-  setStatus("Attached — move, talk, blink, then Record");
+  setStatus("Attached — move then Record");
   toast("Mask attached");
 }
 
@@ -364,7 +329,6 @@ function loop() {
       lastTs = ts;
       const result = landmarker.detectForVideo(video, ts);
       face = result.faceLandmarks?.[0] || null;
-      readBlend(result);
     }
     if (attached) drawMask();
     else if (face) drawMap();
