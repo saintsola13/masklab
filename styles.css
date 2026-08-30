@@ -118,10 +118,37 @@ html, body {
 .lib-item button::after { display: none; }
 
 /* ── VOICE FX PANEL ── */
+/* ── FLOATING VFX BUTTON ── */
+#btn-vfx {
+  position: absolute;
+  top: max(52px, calc(env(safe-area-inset-top) + 44px));
+  right: 12px;
+  z-index: 5;
+  width: auto;
+  min-width: 72px;
+  padding: 10px 14px !important;
+  font-size: 11px !important;
+  border-radius: 20px !important;
+  box-shadow:
+    0 6px 0 -4px rgba(255,20,40,0.8),
+    0 10px 20px rgba(255,20,40,0.2),
+    0 4px 12px rgba(0,0,0,0.4) !important;
+  grid-column: unset !important;
+}
+#btn-vfx.fx-active {
+  border-color: rgba(255,42,58,0.8) !important;
+  color: #ff2a3a !important;
+  background: linear-gradient(180deg, rgba(255,42,58,0.25), rgba(20,8,10,0.6)) !important;
+}
+#btn-vfx[disabled] {
+  opacity: 0.28;
+  pointer-events: none;
+}
+
 #vfx-panel {
   position: absolute;
   right: 12px;
-  top: max(52px, calc(env(safe-area-inset-top) + 44px));
+  top: max(110px, calc(env(safe-area-inset-top) + 100px));
   z-index: 4;
   background: var(--glass);
   border: 1px solid rgba(255,42,58,0.35);
