@@ -37,6 +37,33 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   font-size: 12px;
   color: rgba(255,255,255,0.7);
 }
+#preview {
+  position: absolute;
+  top: max(44px, calc(env(safe-area-inset-top) + 36px));
+  left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 4;
+  background: rgba(12,12,12,0.78);
+  border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 14px;
+  padding: 6px 10px 6px 6px;
+  backdrop-filter: blur(10px);
+}
+#preview[hidden] { display: none; }
+#preview-img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #222;
+  display: block;
+}
+#preview-label {
+  font-size: 12px;
+  color: rgba(255,255,255,0.85);
+}
 #dock {
   position: absolute;
   left: 12px;
