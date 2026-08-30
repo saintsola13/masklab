@@ -100,7 +100,6 @@ function showIdlePose() {
 }
 
 function setPreviewFromCanvas(canvas, label) {
-  if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = canvas.toDataURL("image/png");
   previewImg.src = previewUrl;
   previewLabel.textContent = label || "Cutout ready";
@@ -205,10 +204,6 @@ function sampleBg(data, w, h) {
     (w - 1) * 4,
     (h - 1) * w * 4,
     ((h - 1) * w + (w - 1)) * 4,
-    (Math.floor(h / 2) * w) * 4,
-    (Math.floor(h / 2) * w + (w - 1)) * 4,
-    Math.floor(w / 2) * 4,
-    ((h - 1) * w + Math.floor(w / 2)) * 4,
   ];
   let r = 0, g = 0, b = 0;
   for (const i of pts) {
@@ -239,11 +234,11 @@ function floodCutout(src, threshold) {
   const data = img.data;
 
   if (alreadyHasAlpha(data) && threshold < 8) {
-    return canvas;
+    return cropAlpha(canvas);
   }
 
   const [br, bg, bb] = sampleBg(data, w, h);
-  const limit = threshold * threshold * 3;
+  const limit = Math.max(4, threshold) * Math.max(4, threshold) * 3;
   const close = (i) => {
     const dr = data[i] - br;
     const dg = data[i + 1] - bg;
@@ -252,22 +247,11 @@ function floodCutout(src, threshold) {
   };
 
   const seen = new Uint8Array(w * h);
-  const stack = [];
-  const seeds = [
-    0, w - 1,
-    (h - 1) * w, h * w - 1,
-    Math.floor(w / 2),
-    (h - 1) * w + Math.floor(w / 2),
-    Math.floor(h / 2) * w,
-    Math.floor(h / 2) * w + (w - 1),
-  ];
-  for (const s of seeds) {
-    if (close(s * 4)) stack.push(s);
-  }
+  const stack = [0, w - 1, (h - 1) * w, h * w - 1];
 
   while (stack.length) {
     const p = stack.pop();
-    if (seen[p]) continue;
+    if (p < 0 || p >= w * h || seen[p]) continue;
     seen[p] = 1;
     const i = p * 4;
     if (!close(i)) continue;
@@ -280,7 +264,6 @@ function floodCutout(src, threshold) {
     if (y < h - 1) stack.push(p + w);
   }
 
-  // Soften leftover near-bg pixels and feather edges
   const copy = new Uint8ClampedArray(data);
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
@@ -337,7 +320,7 @@ function applyPhotoTexture(cut) {
   const tex = new THREE.CanvasTexture(cut);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
-  const aspect = cut.width / cut.height;
+  const aspect = cut.width / Math.max(cut.height, 1);
   const height = 0.3;
   if (photoMesh) {
     photoMesh.geometry.dispose();
@@ -400,49 +383,43 @@ async function loadUserMesh(file) {
   const url = URL.createObjectURL(file);
   const name = (file.name || "").toLowerCase();
   try {
-    let object;
-    let previewCanvas = null;
     if (isImageFile(file)) {
+      clearMask();
       const loaded = await loadPhotoMask(file);
-      object = loaded.mesh;
-      previewCanvas = loaded.previewCanvas;
-    } else {
-      photoSource = null;
-      if (name.endsWith(".obj")) {
-        object = await new OBJLoader().loadAsync(url);
-        object.traverse((n) => {
-          if (n.isMesh) {
-            n.material = new THREE.MeshStandardMaterial({
-              color: 0xc9b79a,
-              metalness: 0.2,
-              roughness: 0.5,
-              side: THREE.DoubleSide,
-            });
-          }
-        });
-        fitObjectToFace(object);
-      } else {
-        const gltf = await new GLTFLoader().loadAsync(url);
-        object = gltf.scene;
-        fitObjectToFace(object);
-      }
-    }
-    if (!photoMesh || object !== photoMesh) {
-      clearMask();
-      maskRoot.add(object);
-    } else if (!maskRoot.children.includes(object)) {
-      clearMask();
-      maskRoot.add(object);
-    }
-    showIdlePose();
-    if (previewCanvas) {
-      setPreviewFromCanvas(previewCanvas, file.name || "Cutout ready");
+      maskRoot.add(loaded.mesh);
+      showIdlePose();
+      setPreviewFromCanvas(loaded.previewCanvas, file.name || "Cutout ready");
       toast("Background punched out — drag Cutout if needed");
-    } else {
-      hidePreview();
-      toast("Mask fitted");
+      setStatus(running ? "Mask on face — look at camera" : "Cutout ready — start camera to lock it");
+      return;
     }
-    setStatus(running ? "Mask on face — look at camera" : "Cutout ready — start camera to lock it");
+
+    photoSource = null;
+    let object;
+    if (name.endsWith(".obj")) {
+      object = await new OBJLoader().loadAsync(url);
+      object.traverse((n) => {
+        if (n.isMesh) {
+          n.material = new THREE.MeshStandardMaterial({
+            color: 0xc9b79a,
+            metalness: 0.2,
+            roughness: 0.5,
+            side: THREE.DoubleSide,
+          });
+        }
+      });
+      fitObjectToFace(object);
+    } else {
+      const gltf = await new GLTFLoader().loadAsync(url);
+      object = gltf.scene;
+      fitObjectToFace(object);
+    }
+    clearMask();
+    maskRoot.add(object);
+    showIdlePose();
+    hidePreview();
+    toast("Mask fitted");
+    setStatus(running ? "Mask on face — look at camera" : "Mask loaded — start camera to lock it");
   } catch (err) {
     console.error(err);
     toast("Could not load that file");
