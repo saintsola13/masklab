@@ -20,6 +20,7 @@ const meshInput = document.getElementById("file-3d");
 const previewEl = document.getElementById("preview");
 const previewImg = document.getElementById("preview-img");
 const previewLabel = document.getElementById("preview-label");
+const cutoutInput = document.getElementById("cutout");
 
 const BLEND_MAP = {
   jawOpen: ["jawOpen", "mouthOpen", "MouthOpen"],
@@ -37,6 +38,8 @@ let lastTs = -1;
 let recorder = null;
 let recChunks = [];
 let previewUrl = null;
+let photoSource = null;
+let photoMesh = null;
 
 const renderer = new THREE.WebGLRenderer({
   canvas: glCanvas,
@@ -96,17 +99,17 @@ function showIdlePose() {
   maskRoot.visible = true;
 }
 
-function setPreview(src, label) {
+function setPreviewFromCanvas(canvas, label) {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
-  previewUrl = src || null;
-  if (src) {
-    previewImg.src = src;
-    previewLabel.textContent = label || "Photo ready";
-    previewEl.hidden = false;
-  } else {
-    previewImg.removeAttribute("src");
-    previewEl.hidden = true;
-  }
+  previewUrl = canvas.toDataURL("image/png");
+  previewImg.src = previewUrl;
+  previewLabel.textContent = label || "Cutout ready";
+  previewEl.hidden = false;
+}
+
+function hidePreview() {
+  previewEl.hidden = true;
+  previewImg.removeAttribute("src");
 }
 
 function clearMask() {
@@ -124,6 +127,7 @@ function clearMask() {
     });
     maskRoot.remove(obj);
   }
+  photoMesh = null;
 }
 
 function fitObjectToFace(object) {
@@ -180,8 +184,9 @@ function makeBuiltinMask() {
 }
 
 function useBuiltin() {
+  photoSource = null;
   clearMask();
-  setPreview(null);
+  hidePreview();
   const mask = makeBuiltinMask();
   maskRoot.add(mask);
   showIdlePose();
@@ -194,35 +199,194 @@ function isImageFile(file) {
   return type.startsWith("image/") || /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/.test(name);
 }
 
+function sampleBg(data, w, h) {
+  const pts = [
+    0,
+    (w - 1) * 4,
+    (h - 1) * w * 4,
+    ((h - 1) * w + (w - 1)) * 4,
+    (Math.floor(h / 2) * w) * 4,
+    (Math.floor(h / 2) * w + (w - 1)) * 4,
+    Math.floor(w / 2) * 4,
+    ((h - 1) * w + Math.floor(w / 2)) * 4,
+  ];
+  let r = 0, g = 0, b = 0;
+  for (const i of pts) {
+    r += data[i];
+    g += data[i + 1];
+    b += data[i + 2];
+  }
+  return [r / pts.length, g / pts.length, b / pts.length];
+}
+
+function alreadyHasAlpha(data) {
+  let transparent = 0;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 250) transparent++;
+  }
+  return transparent / (data.length / 4) > 0.04;
+}
+
+function floodCutout(src, threshold) {
+  const w = src.width;
+  const h = src.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0);
+  const img = ctx.getImageData(0, 0, w, h);
+  const data = img.data;
+
+  if (alreadyHasAlpha(data) && threshold < 8) {
+    return canvas;
+  }
+
+  const [br, bg, bb] = sampleBg(data, w, h);
+  const limit = threshold * threshold * 3;
+  const close = (i) => {
+    const dr = data[i] - br;
+    const dg = data[i + 1] - bg;
+    const db = data[i + 2] - bb;
+    return dr * dr + dg * dg + db * db <= limit;
+  };
+
+  const seen = new Uint8Array(w * h);
+  const stack = [];
+  const seeds = [
+    0, w - 1,
+    (h - 1) * w, h * w - 1,
+    Math.floor(w / 2),
+    (h - 1) * w + Math.floor(w / 2),
+    Math.floor(h / 2) * w,
+    Math.floor(h / 2) * w + (w - 1),
+  ];
+  for (const s of seeds) {
+    if (close(s * 4)) stack.push(s);
+  }
+
+  while (stack.length) {
+    const p = stack.pop();
+    if (seen[p]) continue;
+    seen[p] = 1;
+    const i = p * 4;
+    if (!close(i)) continue;
+    data[i + 3] = 0;
+    const x = p % w;
+    const y = (p / w) | 0;
+    if (x > 0) stack.push(p - 1);
+    if (x < w - 1) stack.push(p + 1);
+    if (y > 0) stack.push(p - w);
+    if (y < h - 1) stack.push(p + w);
+  }
+
+  // Soften leftover near-bg pixels and feather edges
+  const copy = new Uint8ClampedArray(data);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const p = y * w + x;
+      const i = p * 4;
+      if (copy[i + 3] === 0) continue;
+      if (close(i)) {
+        let n = 0;
+        if (copy[(p - 1) * 4 + 3] === 0) n++;
+        if (copy[(p + 1) * 4 + 3] === 0) n++;
+        if (copy[(p - w) * 4 + 3] === 0) n++;
+        if (copy[(p + w) * 4 + 3] === 0) n++;
+        if (n) data[i + 3] = Math.max(0, 255 - n * 90);
+      }
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
+  return cropAlpha(canvas);
+}
+
+function cropAlpha(src) {
+  const w = src.width;
+  const h = src.height;
+  const ctx = src.getContext("2d", { willReadFrequently: true });
+  const { data } = ctx.getImageData(0, 0, w, h);
+  let minX = w, minY = h, maxX = 0, maxY = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (data[(y * w + x) * 4 + 3] > 8) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX <= minX || maxY <= minY) return src;
+  const pad = 4;
+  minX = Math.max(0, minX - pad);
+  minY = Math.max(0, minY - pad);
+  maxX = Math.min(w - 1, maxX + pad);
+  maxY = Math.min(h - 1, maxY + pad);
+  const cw = maxX - minX + 1;
+  const ch = maxY - minY + 1;
+  const out = document.createElement("canvas");
+  out.width = cw;
+  out.height = ch;
+  out.getContext("2d").drawImage(src, minX, minY, cw, ch, 0, 0, cw, ch);
+  return out;
+}
+
+function applyPhotoTexture(cut) {
+  const tex = new THREE.CanvasTexture(cut);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  const aspect = cut.width / cut.height;
+  const height = 0.3;
+  if (photoMesh) {
+    photoMesh.geometry.dispose();
+    photoMesh.geometry = new THREE.PlaneGeometry(height * aspect, height, 12, 12);
+    if (photoMesh.material.map) photoMesh.material.map.dispose();
+    photoMesh.material.map = tex;
+    photoMesh.material.needsUpdate = true;
+    return photoMesh;
+  }
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(height * aspect, height, 12, 12),
+    new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      alphaTest: 0.08,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  mesh.position.z = 0.05;
+  photoMesh = mesh;
+  return mesh;
+}
+
+function rebuildPhotoCutout() {
+  if (!photoSource) return;
+  const cut = floodCutout(photoSource, Number(cutoutInput.value));
+  applyPhotoTexture(cut);
+  setPreviewFromCanvas(cut, "White bg removed");
+}
+
 function loadPhotoMask(file) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
-      const max = 1024;
+      const max = 900;
       const scale = Math.min(1, max / Math.max(img.width, img.height));
       const w = Math.max(2, Math.round(img.width * scale));
       const h = Math.max(2, Math.round(img.height * scale));
-      const c = document.createElement("canvas");
-      c.width = w;
-      c.height = h;
-      const ctx = c.getContext("2d");
-      ctx.drawImage(img, 0, 0, w, h);
-      const tex = new THREE.CanvasTexture(c);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.needsUpdate = true;
-      const aspect = w / h;
-      const height = 0.32;
-      const mesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(height * aspect, height, 12, 12),
-        new THREE.MeshBasicMaterial({
-          map: tex,
-          transparent: true,
-          side: THREE.DoubleSide,
-        })
-      );
-      mesh.position.z = 0.05;
-      resolve({ mesh, preview: url });
+      const src = document.createElement("canvas");
+      src.width = w;
+      src.height = h;
+      src.getContext("2d").drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      photoSource = src;
+      const cut = floodCutout(src, Number(cutoutInput.value));
+      const mesh = applyPhotoTexture(cut);
+      resolve({ mesh, previewCanvas: cut });
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -237,39 +401,48 @@ async function loadUserMesh(file) {
   const name = (file.name || "").toLowerCase();
   try {
     let object;
-    let preview = null;
+    let previewCanvas = null;
     if (isImageFile(file)) {
       const loaded = await loadPhotoMask(file);
       object = loaded.mesh;
-      preview = loaded.preview;
-    } else if (name.endsWith(".obj")) {
-      object = await new OBJLoader().loadAsync(url);
-      object.traverse((n) => {
-        if (n.isMesh) {
-          n.material = new THREE.MeshStandardMaterial({
-            color: 0xc9b79a,
-            metalness: 0.2,
-            roughness: 0.5,
-            side: THREE.DoubleSide,
-          });
-        }
-      });
-      fitObjectToFace(object);
+      previewCanvas = loaded.previewCanvas;
     } else {
-      const gltf = await new GLTFLoader().loadAsync(url);
-      object = gltf.scene;
-      fitObjectToFace(object);
+      photoSource = null;
+      if (name.endsWith(".obj")) {
+        object = await new OBJLoader().loadAsync(url);
+        object.traverse((n) => {
+          if (n.isMesh) {
+            n.material = new THREE.MeshStandardMaterial({
+              color: 0xc9b79a,
+              metalness: 0.2,
+              roughness: 0.5,
+              side: THREE.DoubleSide,
+            });
+          }
+        });
+        fitObjectToFace(object);
+      } else {
+        const gltf = await new GLTFLoader().loadAsync(url);
+        object = gltf.scene;
+        fitObjectToFace(object);
+      }
     }
-    clearMask();
-    maskRoot.add(object);
+    if (!photoMesh || object !== photoMesh) {
+      clearMask();
+      maskRoot.add(object);
+    } else if (!maskRoot.children.includes(object)) {
+      clearMask();
+      maskRoot.add(object);
+    }
     showIdlePose();
-    if (preview) {
-      setPreview(preview, file.name || "Photo ready");
+    if (previewCanvas) {
+      setPreviewFromCanvas(previewCanvas, file.name || "Cutout ready");
+      toast("Background punched out — drag Cutout if needed");
     } else {
-      setPreview(null);
+      hidePreview();
+      toast("Mask fitted");
     }
-    setStatus(running ? "Photo on face — look at camera" : "Photo loaded — start camera to lock it");
-    toast(isImageFile(file) ? "Photo on screen" : "Mask fitted");
+    setStatus(running ? "Mask on face — look at camera" : "Cutout ready — start camera to lock it");
   } catch (err) {
     console.error(err);
     toast("Could not load that file");
@@ -449,6 +622,7 @@ btnRec.addEventListener("click", startRec);
 btnStop.addEventListener("click", stopRec);
 photoInput.addEventListener("change", () => onPicked(photoInput));
 meshInput.addEventListener("change", () => onPicked(meshInput));
+cutoutInput.addEventListener("input", rebuildPhotoCutout);
 
 useBuiltin();
 loop();
