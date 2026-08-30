@@ -21,9 +21,11 @@ const saveSheet = document.getElementById("save-sheet");
 const saveVideo = document.getElementById("save-video");
 const btnSavePhotos = document.getElementById("btn-save-photos");
 const btnSaveClose = document.getElementById("btn-save-close");
+const libraryEl = document.getElementById("library");
 
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
+const STORE = "masklab.photos";
 
 let landmarker = null;
 let stream = null;
@@ -48,6 +50,84 @@ function toast(t, ms = 1800) {
   clearTimeout(toastEl._t);
   toastEl._t = setTimeout(() => (toastEl.hidden = true), ms);
 }
+
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(STORE);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+function writeStore(items) {
+  const next = items.slice(0, 8);
+  try {
+    localStorage.setItem(STORE, JSON.stringify(next));
+    return true;
+  } catch {
+    if (next.length > 1) return writeStore(next.slice(0, next.length - 1));
+    return false;
+  }
+}
+function persistPhoto() {
+  if (!photoSource) return;
+  const dataUrl = photoSource.toDataURL("image/jpeg", 0.7);
+  const items = loadStore().filter((x) => x.dataUrl !== dataUrl);
+  items.unshift({ id: Date.now(), dataUrl });
+  writeStore(items);
+  renderLibrary();
+}
+function deleteSaved(id) {
+  writeStore(loadStore().filter((x) => String(x.id) !== String(id)));
+  renderLibrary();
+}
+function renderLibrary() {
+  const items = loadStore();
+  if (!items.length) {
+    libraryEl.hidden = true;
+    libraryEl.innerHTML = "";
+    return;
+  }
+  libraryEl.hidden = false;
+  libraryEl.innerHTML = items
+    .map(
+      (item) =>
+        `<div class="lib-item" data-id="${item.id}"><img alt="" src="${item.dataUrl}"><button type="button" data-del="${item.id}">×</button></div>`
+    )
+    .join("");
+}
+async function useSaved(id) {
+  const item = loadStore().find((x) => String(x.id) === String(id));
+  if (!item) return;
+  const img = new Image();
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+    img.src = item.dataUrl;
+  });
+  photoSource = drawSource(img);
+  rebuildCutout();
+  previewEl.hidden = false;
+  previewLabel.textContent = "Saved mask — Attach";
+  btnAttach.disabled = false;
+  attached = false;
+  locked = false;
+  btnLock.disabled = true;
+  btnLock.textContent = "4. Lock";
+  btnRec.disabled = true;
+  setStatus(face ? "Tap Attach" : "Start camera, then Attach");
+  toast("Loaded saved photo");
+}
+libraryEl.addEventListener("click", (e) => {
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    e.stopPropagation();
+    deleteSaved(del.getAttribute("data-del"));
+    return;
+  }
+  const item = e.target.closest(".lib-item");
+  if (item) useSaved(item.getAttribute("data-id"));
+});
 
 function sizeCanvases() {
   const w = Math.round(window.innerWidth * Math.min(devicePixelRatio, 2));
@@ -482,6 +562,7 @@ photoInput.addEventListener("change", async () => {
     photoSource = drawSource(decoded);
     if (decoded.close) decoded.close();
     rebuildCutout();
+    persistPhoto();
     previewEl.hidden = false;
     previewLabel.textContent = "Cutout ready — Attach";
     btnAttach.disabled = false;
@@ -491,7 +572,7 @@ photoInput.addEventListener("change", async () => {
     btnLock.textContent = "4. Lock";
     btnRec.disabled = true;
     setStatus(face ? "Tap Attach" : "Look at camera, then Attach");
-    toast("Photo cut out — tap Attach");
+    toast("Saved locally — tap Attach");
   } catch (err) {
     console.error(err);
     toast("Could not read that photo — try a screenshot");
@@ -499,5 +580,6 @@ photoInput.addEventListener("change", async () => {
 });
 cutoutInput.addEventListener("input", rebuildCutout);
 
+renderLibrary();
 loop();
 setStatus("1 / 5 — Start camera");
