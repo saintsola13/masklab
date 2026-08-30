@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>MASKLAB — Face Mask Studio</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="stage">
+    <video id="cam" playsinline muted autoplay></video>
+    <canvas id="gl"></canvas>
+    <canvas id="rec"></canvas>
+    <div id="hud">
+      <div id="brand">MASKLAB</div>
+      <div id="status">Tap Start camera</div>
+    </div>
+    <div id="dock">
+      <button id="btn-cam" class="primary">Start camera</button>
+      <label class="btn">
+        Upload .glb / .obj
+        <input id="file" type="file" accept=".glb,.gltf,.obj,model/gltf-binary,model/gltf+json,model/obj" />
+      </label>
+      <button id="btn-demo">Built-in mask</button>
+      <button id="btn-rec" disabled>Record</button>
+      <button id="btn-stop" hidden>Stop & save</button>
+    </div>
+    <div id="toast" hidden></div>
+  </div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
