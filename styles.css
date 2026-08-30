@@ -7,16 +7,24 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   overflow: hidden;
   background: #000;
 }
-#cam, #gl, #rec {
+#cam, #gl, #rec, #picked {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
-#cam { transform: scaleX(-1); }
+#cam { object-fit: cover; transform: scaleX(-1); }
 #gl { pointer-events: none; }
 #rec { display: none; }
+#picked {
+  display: none;
+  z-index: 2;
+  pointer-events: none;
+  background: rgba(0,0,0,0.35);
+  padding: 18vh 12vw;
+}
+#picked.on { display: block; }
 #hud {
   position: absolute;
   top: max(12px, env(safe-area-inset-top));
@@ -98,7 +106,7 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   justify-content: center;
   z-index: 4;
 }
-button, .btn {
+button {
   appearance: none;
   border: 1px solid rgba(255,255,255,0.28);
   background: rgba(12,12,12,0.72);
@@ -113,7 +121,13 @@ button, .btn {
 }
 button.primary { background: #fff; color: #111; border-color: #fff; }
 button[disabled] { opacity: 0.4; cursor: not-allowed; }
-.btn input { display: none; }
+#file-photo, #file-3d {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
 #toast {
   position: absolute;
   top: 50%;
