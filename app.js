@@ -5,13 +5,12 @@ import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 const video = document.getElementById("cam");
 const glCanvas = document.getElementById("gl");
 const recCanvas = document.getElementById("rec");
-const pickedEl = document.getElementById("picked");
 const statusEl = document.getElementById("status");
 const toastEl = document.getElementById("toast");
 const btnCam = document.getElementById("btn-cam");
-const btnDemo = document.getElementById("btn-demo");
 const btnRec = document.getElementById("btn-rec");
 const btnStop = document.getElementById("btn-stop");
+const photoBtn = document.getElementById("photo-btn");
 const photoInput = document.getElementById("file-photo");
 const meshInput = document.getElementById("file-3d");
 const previewEl = document.getElementById("preview");
@@ -19,17 +18,6 @@ const previewImg = document.getElementById("preview-img");
 const previewLabel = document.getElementById("preview-label");
 const cutoutInput = document.getElementById("cutout");
 
-const BLEND_MAP = {
-  jawOpen: ["jawOpen", "mouthOpen", "MouthOpen"],
-  eyeBlinkLeft: ["eyeBlinkLeft", "eyeBlink_L", "Blink_L"],
-  eyeBlinkRight: ["eyeBlinkRight", "eyeBlink_R", "Blink_R"],
-  mouthSmileLeft: ["mouthSmileLeft", "smileLeft"],
-  mouthSmileRight: ["mouthSmileRight", "smileRight"],
-  browInnerUp: ["browInnerUp", "browUp"],
-};
-
-let FaceLandmarker = null;
-let FilesetResolver = null;
 let landmarker = null;
 let stream = null;
 let running = false;
@@ -38,6 +26,7 @@ let recorder = null;
 let recChunks = [];
 let photoSource = null;
 let photoMesh = null;
+let hasMask = false;
 
 const renderer = new THREE.WebGLRenderer({
   canvas: glCanvas,
@@ -51,71 +40,42 @@ renderer.setClearColor(0x000000, 0);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 100);
 camera.position.set(0, 0, 1);
-
-scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 const key = new THREE.DirectionalLight(0xffffff, 1.1);
 key.position.set(0.4, 1.2, 1.5);
 scene.add(key);
-
 const maskRoot = new THREE.Group();
+maskRoot.visible = false;
 scene.add(maskRoot);
 const recCtx = recCanvas.getContext("2d");
 
 function setStatus(t) {
   statusEl.textContent = t;
 }
-function toast(t, ms = 2200) {
+function toast(t, ms = 2000) {
   toastEl.hidden = false;
   toastEl.textContent = t;
   clearTimeout(toastEl._t);
   toastEl._t = setTimeout(() => (toastEl.hidden = true), ms);
 }
-
 function resize() {
-  const w = stageW();
-  const h = stageH();
+  const w = glCanvas.clientWidth || window.innerWidth;
+  const h = glCanvas.clientHeight || window.innerHeight;
   renderer.setSize(w, h, false);
   recCanvas.width = w;
   recCanvas.height = h;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
-function stageW() {
-  return glCanvas.clientWidth || window.innerWidth;
-}
-function stageH() {
-  return glCanvas.clientHeight || window.innerHeight;
-}
 window.addEventListener("resize", resize);
 resize();
 
-function showIdlePose() {
-  maskRoot.position.set(0, 0, 0);
-  maskRoot.quaternion.identity();
-  maskRoot.scale.setScalar(1);
-  maskRoot.visible = true;
+function unlockPhotos() {
+  photoBtn.classList.remove("locked");
+  photoInput.disabled = false;
 }
-
-function showPicked(url) {
-  if (!url) {
-    pickedEl.removeAttribute("src");
-    pickedEl.classList.remove("on");
-    return;
-  }
-  pickedEl.src = url;
-  pickedEl.classList.add("on");
-}
-
-function setPreviewFromCanvas(canvas, label) {
-  previewImg.src = canvas.toDataURL("image/png");
-  previewLabel.textContent = label || "Cutout ready";
-  previewEl.hidden = false;
-}
-
-function hidePreview() {
-  previewEl.hidden = true;
-  previewImg.removeAttribute("src");
-  showPicked(null);
+function unlockRecord() {
+  if (running && hasMask) btnRec.disabled = false;
 }
 
 function clearMask() {
@@ -141,53 +101,7 @@ function fitObjectToFace(object) {
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   object.position.sub(center);
-  const tallest = Math.max(size.y, 0.0001);
-  object.scale.setScalar(0.22 / tallest);
-}
-
-function makeBuiltinMask() {
-  const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xd7c4a3,
-    metalness: 0.15,
-    roughness: 0.45,
-    side: THREE.DoubleSide,
-  });
-  const plate = new THREE.Mesh(new THREE.SphereGeometry(0.11, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.62), mat);
-  plate.rotation.x = 0.15;
-  plate.position.y = 0.01;
-  g.add(plate);
-  const rim = new THREE.Mesh(
-    new THREE.TorusGeometry(0.11, 0.008, 12, 40, Math.PI * 1.15),
-    new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.6, roughness: 0.3 })
-  );
-  rim.rotation.x = Math.PI / 2.15;
-  rim.position.y = 0.02;
-  g.add(rim);
-  const eyeGeo = new THREE.TorusGeometry(0.022, 0.006, 10, 24);
-  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.4, roughness: 0.35 });
-  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
-  const eyeR = eyeL.clone();
-  eyeL.position.set(-0.035, 0.03, 0.09);
-  eyeR.position.set(0.035, 0.03, 0.09);
-  g.add(eyeL, eyeR);
-  const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.028, 0.004, 8, 20, Math.PI), eyeMat);
-  mouth.rotation.x = Math.PI;
-  mouth.position.set(0, -0.03, 0.09);
-  g.add(mouth);
-  g.userData.mouth = mouth;
-  g.userData.eyeL = eyeL;
-  g.userData.eyeR = eyeR;
-  return g;
-}
-
-function useBuiltin() {
-  photoSource = null;
-  clearMask();
-  hidePreview();
-  maskRoot.add(makeBuiltinMask());
-  showIdlePose();
-  setStatus("Built-in mask ready — start camera to lock it");
+  object.scale.setScalar(0.22 / Math.max(size.y, 0.0001));
 }
 
 function sampleBg(data, w, h) {
@@ -212,7 +126,7 @@ function floodCutout(src, threshold) {
   const img = ctx.getImageData(0, 0, w, h);
   const data = img.data;
   const [br, bg, bb] = sampleBg(data, w, h);
-  const limit = Math.max(4, threshold) * Math.max(4, threshold) * 3;
+  const limit = threshold * threshold * 3;
   const close = (i) => {
     const dr = data[i] - br;
     const dg = data[i + 1] - bg;
@@ -225,9 +139,8 @@ function floodCutout(src, threshold) {
     const p = stack.pop();
     if (p < 0 || p >= w * h || seen[p]) continue;
     seen[p] = 1;
-    const i = p * 4;
-    if (!close(i)) continue;
-    data[i + 3] = 0;
+    if (!close(p * 4)) continue;
+    data[p * 4 + 3] = 0;
     const x = p % w;
     const y = (p / w) | 0;
     if (x > 0) stack.push(p - 1);
@@ -275,26 +188,26 @@ function applyPhotoTexture(cut) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   const aspect = cut.width / Math.max(cut.height, 1);
-  const height = 0.3;
+  const height = 0.28;
   if (photoMesh) {
     photoMesh.geometry.dispose();
-    photoMesh.geometry = new THREE.PlaneGeometry(height * aspect, height, 12, 12);
+    photoMesh.geometry = new THREE.PlaneGeometry(height * aspect, height, 8, 8);
     if (photoMesh.material.map) photoMesh.material.map.dispose();
     photoMesh.material.map = tex;
     photoMesh.material.needsUpdate = true;
     return photoMesh;
   }
   const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(height * aspect, height, 12, 12),
+    new THREE.PlaneGeometry(height * aspect, height, 8, 8),
     new THREE.MeshBasicMaterial({
       map: tex,
       transparent: true,
-      alphaTest: 0.08,
+      alphaTest: 0.1,
       side: THREE.DoubleSide,
       depthWrite: false,
     })
   );
-  mesh.position.z = 0.05;
+  mesh.position.z = 0.06;
   photoMesh = mesh;
   return mesh;
 }
@@ -303,14 +216,13 @@ function rebuildPhotoCutout() {
   if (!photoSource) return;
   const cut = floodCutout(photoSource, Number(cutoutInput.value));
   applyPhotoTexture(cut);
-  setPreviewFromCanvas(cut, "White bg removed");
+  previewImg.src = cut.toDataURL("image/png");
 }
 
 function drawSource(imgLike) {
-  const width = imgLike.width || imgLike.videoWidth || 2;
-  const height = imgLike.height || imgLike.videoHeight || 2;
-  const max = 720;
-  const scale = Math.min(1, max / Math.max(width, height));
+  const width = imgLike.width || 2;
+  const height = imgLike.height || 2;
+  const scale = Math.min(1, 720 / Math.max(width, height));
   const w = Math.max(2, Math.round(width * scale));
   const h = Math.max(2, Math.round(height * scale));
   const src = document.createElement("canvas");
@@ -320,51 +232,47 @@ function drawSource(imgLike) {
   return src;
 }
 
-function decodeWithImage(url) {
-  return new Promise((resolve, reject) => {
+async function decodePhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    if (typeof createImageBitmap === "function") {
+      try {
+        return await createImageBitmap(file);
+      } catch (_) {}
+    }
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("image element failed"));
-    img.src = url;
-  });
-}
-
-async function decodePhoto(file, url) {
-  if (typeof createImageBitmap === "function") {
-    try {
-      return await createImageBitmap(file);
-    } catch (_) {}
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = url;
+    });
+    return img;
+  } finally {
+    URL.revokeObjectURL(url);
   }
-  return decodeWithImage(url);
 }
 
 async function loadPhotoFile(file) {
-  const url = URL.createObjectURL(file);
-  showPicked(url);
-  previewImg.src = url;
-  previewLabel.textContent = file.name || "Photo selected";
-  previewEl.hidden = false;
-  toast("Photo selected");
-  setStatus("Loading photo…");
-  const decoded = await decodePhoto(file, url);
+  setStatus("Cutting photo out…");
+  toast("Cutting background");
+  const decoded = await decodePhoto(file);
   const src = drawSource(decoded);
   if (decoded.close) decoded.close();
   photoSource = src;
-  let cut = src;
-  try {
-    cut = floodCutout(src, Number(cutoutInput.value));
-  } catch (err) {
-    console.error(err);
-  }
+  const cut = floodCutout(src, Number(cutoutInput.value));
   const mesh = applyPhotoTexture(cut);
   if (!maskRoot.children.includes(mesh)) {
     clearMask();
     photoMesh = mesh;
     maskRoot.add(mesh);
   }
-  showIdlePose();
-  setPreviewFromCanvas(cut, file.name || "Cutout ready");
-  setStatus(running ? "Mask on face — look at camera" : "Photo ready — start camera to lock it");
+  hasMask = true;
+  previewImg.src = cut.toDataURL("image/png");
+  previewLabel.textContent = "Cutout on face";
+  previewEl.hidden = false;
+  unlockRecord();
+  setStatus(running ? "Look at camera — mask attaching" : "Start camera to attach");
+  toast("Mask ready — look at the camera");
 }
 
 async function loadModelFile(file) {
@@ -372,7 +280,6 @@ async function loadModelFile(file) {
   const name = (file.name || "").toLowerCase();
   try {
     photoSource = null;
-    showPicked(null);
     let object;
     if (name.endsWith(".obj")) {
       object = await new OBJLoader().loadAsync(url);
@@ -386,61 +293,27 @@ async function loadModelFile(file) {
           });
         }
       });
-      fitObjectToFace(object);
     } else {
-      const gltf = await new GLTFLoader().loadAsync(url);
-      object = gltf.scene;
-      fitObjectToFace(object);
+      object = (await new GLTFLoader().loadAsync(url)).scene;
     }
+    fitObjectToFace(object);
     clearMask();
     maskRoot.add(object);
-    showIdlePose();
-    hidePreview();
-    toast("Mask fitted");
-    setStatus(running ? "Mask on face — look at camera" : "Mask loaded — start camera to lock it");
+    hasMask = true;
+    previewEl.hidden = true;
+    unlockRecord();
+    setStatus("Look at camera — mask attaching");
   } finally {
     URL.revokeObjectURL(url);
   }
 }
 
-function morphTargets(root) {
-  const found = [];
-  root.traverse((n) => {
-    if (n.morphTargetDictionary && n.morphTargetInfluences) found.push(n);
-  });
-  return found;
-}
-
-function applyBlendshapes(result) {
-  const cats = result.faceBlendshapes?.[0]?.categories;
-  if (!cats) return;
-  const scores = {};
-  for (const c of cats) scores[c.categoryName] = c.score;
-  const meshes = morphTargets(maskRoot);
-  if (meshes.length) {
-    for (const mesh of meshes) {
-      const dict = mesh.morphTargetDictionary;
-      const inf = mesh.morphTargetInfluences;
-      for (const [src, aliases] of Object.entries(BLEND_MAP)) {
-        const score = scores[src] || 0;
-        for (const alias of aliases) {
-          if (alias in dict) inf[dict[alias]] = score;
-        }
-      }
-    }
-    return;
-  }
-  const mask = maskRoot.children[0];
-  if (!mask?.userData?.mouth) return;
-  const open = scores.jawOpen || 0;
-  mask.userData.mouth.scale.y = 1 + open * 1.8;
-  mask.userData.eyeL.scale.y = 1 - (scores.eyeBlinkLeft || 0) * 0.85;
-  mask.userData.eyeR.scale.y = 1 - (scores.eyeBlinkRight || 0) * 0.85;
-}
-
 function applyPose(result) {
   const mats = result.facialTransformationMatrixes;
-  if (!mats?.length) return;
+  if (!mats?.length || !hasMask) {
+    if (hasMask) setStatus("No face — look at camera");
+    return;
+  }
   const m = new THREE.Matrix4().fromArray(mats[0].data);
   const s = new THREE.Vector3();
   const r = new THREE.Quaternion();
@@ -453,18 +326,16 @@ function applyPose(result) {
   maskRoot.quaternion.copy(r);
   maskRoot.scale.setScalar(0.55);
   maskRoot.visible = true;
-  pickedEl.classList.remove("on");
+  setStatus("Mask locked — Record when ready");
 }
 
 async function initLandmarker() {
   setStatus("Loading face tracker…");
   const mod = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm");
-  FaceLandmarker = mod.FaceLandmarker;
-  FilesetResolver = mod.FilesetResolver;
-  const fileset = await FilesetResolver.forVisionTasks(
+  const fileset = await mod.FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
   );
-  landmarker = await FaceLandmarker.createFromOptions(fileset, {
+  landmarker = await mod.FaceLandmarker.createFromOptions(fileset, {
     baseOptions: {
       modelAssetPath:
         "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
@@ -472,7 +343,7 @@ async function initLandmarker() {
     },
     runningMode: "VIDEO",
     numFaces: 1,
-    outputFaceBlendshapes: true,
+    outputFaceBlendshapes: false,
     outputFacialTransformationMatrixes: true,
   });
 }
@@ -485,8 +356,8 @@ async function startCamera() {
       audio: false,
     });
   } catch (err) {
-    setStatus("Camera permission blocked");
-    toast("Allow camera access and try again");
+    setStatus("Camera blocked — allow access");
+    toast("Allow camera and try again");
     return;
   }
   video.srcObject = stream;
@@ -494,17 +365,17 @@ async function startCamera() {
   if (!landmarker) await initLandmarker();
   running = true;
   btnCam.textContent = "Camera on";
-  btnRec.disabled = false;
-  setStatus("Tracking face");
+  unlockPhotos();
+  unlockRecord();
+  setStatus(hasMask ? "Look at camera — mask attaching" : "2 / 4 — Pick a photo");
+  toast("Camera on — pick a photo");
 }
 
 function loop() {
   const ts = performance.now();
   if (running && video.readyState >= 2 && landmarker && ts !== lastTs) {
     lastTs = ts;
-    const result = landmarker.detectForVideo(video, ts);
-    applyPose(result);
-    applyBlendshapes(result);
+    applyPose(landmarker.detectForVideo(video, ts));
   }
   renderer.render(scene, camera);
   if (recorder && recorder.state === "recording") compositeFrame();
@@ -523,7 +394,7 @@ function compositeFrame() {
 }
 
 function startRec() {
-  if (!running) return;
+  if (!running || !hasMask) return;
   recChunks = [];
   compositeFrame();
   const out = recCanvas.captureStream(30);
@@ -560,7 +431,6 @@ function saveRec() {
 }
 
 btnCam.addEventListener("click", startCamera);
-btnDemo.addEventListener("click", useBuiltin);
 btnRec.addEventListener("click", startRec);
 btnStop.addEventListener("click", stopRec);
 photoInput.addEventListener("change", async () => {
@@ -570,8 +440,7 @@ photoInput.addEventListener("change", async () => {
     await loadPhotoFile(f);
   } catch (err) {
     console.error(err);
-    toast("Could not read that photo");
-    setStatus("Photo failed — try a screenshot");
+    toast("Could not read that photo — try a screenshot");
   }
 });
 meshInput.addEventListener("change", async () => {
@@ -580,13 +449,10 @@ meshInput.addEventListener("change", async () => {
   try {
     await loadModelFile(f);
   } catch (err) {
-    console.error(err);
-    toast("Could not load that file");
-    setStatus("Load failed");
+    toast("Could not load that 3D file");
   }
 });
 cutoutInput.addEventListener("input", rebuildPhotoCutout);
 
-useBuiltin();
 loop();
-setStatus("Tap Start camera or pick a photo");
+setStatus("1 / 4 — Start camera");
