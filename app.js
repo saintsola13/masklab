@@ -17,6 +17,10 @@ const cutoutInput = document.getElementById("cutout");
 const sizeInput = document.getElementById("size");
 const nudgeInput = document.getElementById("nudge");
 const slideInput = document.getElementById("slide");
+const saveSheet = document.getElementById("save-sheet");
+const saveVideo = document.getElementById("save-video");
+const btnSavePhotos = document.getElementById("btn-save-photos");
+const btnSaveClose = document.getElementById("btn-save-close");
 
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
@@ -32,6 +36,8 @@ let attached = false;
 let locked = false;
 let recorder = null;
 let recChunks = [];
+let lastFile = null;
+let lastUrl = null;
 
 function setStatus(t) {
   statusEl.textContent = t;
@@ -364,9 +370,18 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
+function pickMime() {
+  const types = [
+    "video/mp4",
+    "video/mp4;codecs=avc1.42001E,mp4a.40.2",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+  ];
+  return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+}
+
 function pickRecorder() {
-  const types = ["video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
-  const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  const mime = pickMime();
   const canvasStream = recCanvas.captureStream(30);
   const tracks = [...canvasStream.getVideoTracks()];
   if (stream) tracks.push(...stream.getAudioTracks());
@@ -383,56 +398,75 @@ function startRec() {
   compositeTo(recCtx);
   recorder = pickRecorder();
   recorder.ondataavailable = (e) => {
-    if (e.data.size) recChunks.push(e.data);
+    if (e.data && e.data.size) recChunks.push(e.data);
   };
-  recorder.onstop = () => {
-    saveRec();
-  };
-  recorder.start(250);
+  recorder.start(200);
   btnRec.hidden = true;
   btnStop.hidden = false;
   btnStop.textContent = "Stop & save to Photos";
   setStatus("Recording with audio…");
 }
 
-function stopRec() {
-  if (recorder && recorder.state !== "inactive") recorder.stop();
-  btnRec.hidden = false;
-  btnStop.hidden = true;
-}
-
-async function saveRec() {
-  const rawType = recorder.mimeType || "video/mp4";
-  const isMp4 = rawType.includes("mp4");
-  const type = isMp4 ? "video/mp4" : rawType.split(";")[0] || "video/webm";
+function makeFile() {
+  const raw = recorder?.mimeType || recChunks[0]?.type || "video/mp4";
+  const isMp4 = raw.includes("mp4");
+  const type = isMp4 ? "video/mp4" : "video/webm";
   const ext = isMp4 ? "mp4" : "webm";
   const blob = new Blob(recChunks, { type });
-  const file = new File([blob], `masklab-${Date.now()}.${ext}`, { type });
+  return new File([blob], `masklab-${Date.now()}.${ext}`, { type });
+}
+
+function showSaveSheet(file) {
+  if (lastUrl) URL.revokeObjectURL(lastUrl);
+  lastFile = file;
+  lastUrl = URL.createObjectURL(file);
+  saveVideo.src = lastUrl;
+  saveSheet.hidden = false;
+  setStatus("Save to Photos");
+}
+
+async function shareToPhotos(file) {
+  if (!file) return false;
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        files: [file],
-        title: "MASKLAB",
-        text: "Save Video to Photos",
-      });
-      setStatus("Share sheet — tap Save Video");
-      toast("Tap Save Video to put it in Photos");
-      return;
+      await navigator.share({ files: [file], title: "MASKLAB" });
+      toast("Pick Save Video");
+      return true;
+    }
+    if (navigator.share) {
+      await navigator.share({ files: [file], title: "MASKLAB" });
+      toast("Pick Save Video");
+      return true;
     }
   } catch (err) {
-    if (err && err.name === "AbortError") {
-      setStatus("Save canceled");
-      return;
-    }
+    if (err && err.name === "AbortError") return true;
   }
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = file.name;
-  a.click();
-  setStatus("Saved — if it went to Files, open it and share to Photos");
-  toast("Saved file — Share → Save Video");
+  return false;
 }
+
+async function stopRec() {
+  if (!recorder || recorder.state === "inactive") return;
+  const done = new Promise((resolve) => {
+    recorder.addEventListener("stop", resolve, { once: true });
+  });
+  recorder.stop();
+  await done;
+  btnRec.hidden = false;
+  btnStop.hidden = true;
+  const file = makeFile();
+  showSaveSheet(file);
+  await shareToPhotos(file);
+}
+
+btnSavePhotos.addEventListener("click", async () => {
+  if (!lastFile) return;
+  const ok = await shareToPhotos(lastFile);
+  if (!ok) toast("Hold the video → Save Video");
+});
+btnSaveClose.addEventListener("click", () => {
+  saveSheet.hidden = true;
+  setStatus("Locked — Record when ready");
+});
 
 btnCam.addEventListener("click", startCamera);
 btnAttach.addEventListener("click", attach);
