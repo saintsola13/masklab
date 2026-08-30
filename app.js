@@ -15,7 +15,8 @@ const btnCam = document.getElementById("btn-cam");
 const btnDemo = document.getElementById("btn-demo");
 const btnRec = document.getElementById("btn-rec");
 const btnStop = document.getElementById("btn-stop");
-const fileInput = document.getElementById("file");
+const photoInput = document.getElementById("file-photo");
+const meshInput = document.getElementById("file-3d");
 
 const BLEND_MAP = {
   jawOpen: ["jawOpen", "mouthOpen", "MouthOpen"],
@@ -206,7 +207,7 @@ function loadPhotoMask(file) {
 
 async function loadUserMesh(file) {
   const url = URL.createObjectURL(file);
-  const name = file.name.toLowerCase();
+  const name = (file.name || "").toLowerCase();
   try {
     let object;
     if (isImageFile(file)) {
@@ -241,6 +242,12 @@ async function loadUserMesh(file) {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+function onPicked(input) {
+  const f = input.files?.[0];
+  if (f) loadUserMesh(f);
+  input.value = "";
 }
 
 function morphTargets(root) {
@@ -410,10 +417,8 @@ btnCam.addEventListener("click", startCamera);
 btnDemo.addEventListener("click", useBuiltin);
 btnRec.addEventListener("click", startRec);
 btnStop.addEventListener("click", stopRec);
-fileInput.addEventListener("change", () => {
-  const f = fileInput.files?.[0];
-  if (f) loadUserMesh(f);
-});
+photoInput.addEventListener("change", () => onPicked(photoInput));
+meshInput.addEventListener("change", () => onPicked(meshInput));
 
 useBuiltin();
 setStatus("Tap Start camera");

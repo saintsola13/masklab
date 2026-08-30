@@ -18,8 +18,12 @@
     <div id="dock">
       <button id="btn-cam" class="primary">Start camera</button>
       <label class="btn">
-        Upload photo / 3D
-        <input id="file" type="file" accept="image/*,.glb,.gltf,.obj,image/jpeg,image/png,image/webp" />
+        Photos
+        <input id="file-photo" type="file" accept="image/*" />
+      </label>
+      <label class="btn">
+        3D file
+        <input id="file-3d" type="file" accept=".glb,.gltf,.obj,model/gltf-binary,model/gltf+json" />
       </label>
       <button id="btn-demo">Built-in mask</button>
       <button id="btn-rec" disabled>Record</button>
