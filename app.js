@@ -9,9 +9,12 @@ import {
 const video = document.getElementById("cam");
 const glCanvas = document.getElementById("gl");
 const recCanvas = document.getElementById("rec");
+const pickedEl = document.getElementById("picked");
 const statusEl = document.getElementById("status");
 const toastEl = document.getElementById("toast");
 const btnCam = document.getElementById("btn-cam");
+const btnPhoto = document.getElementById("btn-photo");
+const btn3d = document.getElementById("btn-3d");
 const btnDemo = document.getElementById("btn-demo");
 const btnRec = document.getElementById("btn-rec");
 const btnStop = document.getElementById("btn-stop");
@@ -67,7 +70,7 @@ const recCtx = recCanvas.getContext("2d");
 function setStatus(t) {
   statusEl.textContent = t;
 }
-function toast(t, ms = 1800) {
+function toast(t, ms = 2200) {
   toastEl.hidden = false;
   toastEl.textContent = t;
   clearTimeout(toastEl._t);
@@ -99,6 +102,16 @@ function showIdlePose() {
   maskRoot.visible = true;
 }
 
+function showPicked(url) {
+  if (!url) {
+    pickedEl.removeAttribute("src");
+    pickedEl.classList.remove("on");
+    return;
+  }
+  pickedEl.src = url;
+  pickedEl.classList.add("on");
+}
+
 function setPreviewFromCanvas(canvas, label) {
   previewUrl = canvas.toDataURL("image/png");
   previewImg.src = previewUrl;
@@ -106,9 +119,16 @@ function setPreviewFromCanvas(canvas, label) {
   previewEl.hidden = false;
 }
 
+function setPreviewFromUrl(url, label) {
+  previewImg.src = url;
+  previewLabel.textContent = label || "Photo selected";
+  previewEl.hidden = false;
+}
+
 function hidePreview() {
   previewEl.hidden = true;
   previewImg.removeAttribute("src");
+  showPicked(null);
 }
 
 function clearMask() {
@@ -192,19 +212,8 @@ function useBuiltin() {
   setStatus("Built-in mask ready — start camera to lock it");
 }
 
-function isImageFile(file) {
-  const name = (file.name || "").toLowerCase();
-  const type = (file.type || "").toLowerCase();
-  return type.startsWith("image/") || /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/.test(name);
-}
-
 function sampleBg(data, w, h) {
-  const pts = [
-    0,
-    (w - 1) * 4,
-    (h - 1) * w * 4,
-    ((h - 1) * w + (w - 1)) * 4,
-  ];
+  const pts = [0, (w - 1) * 4, (h - 1) * w * 4, ((h - 1) * w + (w - 1)) * 4];
   let r = 0, g = 0, b = 0;
   for (const i of pts) {
     r += data[i];
@@ -262,23 +271,6 @@ function floodCutout(src, threshold) {
     if (x < w - 1) stack.push(p + 1);
     if (y > 0) stack.push(p - w);
     if (y < h - 1) stack.push(p + w);
-  }
-
-  const copy = new Uint8ClampedArray(data);
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const p = y * w + x;
-      const i = p * 4;
-      if (copy[i + 3] === 0) continue;
-      if (close(i)) {
-        let n = 0;
-        if (copy[(p - 1) * 4 + 3] === 0) n++;
-        if (copy[(p + 1) * 4 + 3] === 0) n++;
-        if (copy[(p - w) * 4 + 3] === 0) n++;
-        if (copy[(p + w) * 4 + 3] === 0) n++;
-        if (n) data[i + 3] = Math.max(0, 255 - n * 90);
-      }
-    }
   }
 
   ctx.putImageData(img, 0, 0);
@@ -352,49 +344,75 @@ function rebuildPhotoCutout() {
   setPreviewFromCanvas(cut, "White bg removed");
 }
 
-function loadPhotoMask(file) {
+function drawSource(imgLike) {
+  const width = imgLike.width || imgLike.videoWidth || 2;
+  const height = imgLike.height || imgLike.videoHeight || 2;
+  const max = 720;
+  const scale = Math.min(1, max / Math.max(width, height));
+  const w = Math.max(2, Math.round(width * scale));
+  const h = Math.max(2, Math.round(height * scale));
+  const src = document.createElement("canvas");
+  src.width = w;
+  src.height = h;
+  src.getContext("2d").drawImage(imgLike, 0, 0, w, h);
+  return src;
+}
+
+function decodeWithImage(url) {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => {
-      const max = 900;
-      const scale = Math.min(1, max / Math.max(img.width, img.height));
-      const w = Math.max(2, Math.round(img.width * scale));
-      const h = Math.max(2, Math.round(img.height * scale));
-      const src = document.createElement("canvas");
-      src.width = w;
-      src.height = h;
-      src.getContext("2d").drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(url);
-      photoSource = src;
-      const cut = floodCutout(src, Number(cutoutInput.value));
-      const mesh = applyPhotoTexture(cut);
-      resolve({ mesh, previewCanvas: cut });
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("image load failed"));
-    };
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("image element failed"));
     img.src = url;
   });
 }
 
-async function loadUserMesh(file) {
+async function decodePhoto(file, url) {
+  if (typeof createImageBitmap === "function") {
+    try {
+      return await createImageBitmap(file);
+    } catch (_) {}
+  }
+  return decodeWithImage(url);
+}
+
+async function loadPhotoFile(file) {
+  const url = URL.createObjectURL(file);
+  setPreviewFromUrl(url, file.name || "Photo selected");
+  showPicked(url);
+  toast("Photo selected");
+  setStatus("Loading photo…");
+
+  const decoded = await decodePhoto(file, url);
+  const src = drawSource(decoded);
+  if (decoded.close) decoded.close();
+  photoSource = src;
+
+  let cut = src;
+  try {
+    cut = floodCutout(src, Number(cutoutInput.value));
+  } catch (err) {
+    console.error(err);
+  }
+
+  const mesh = applyPhotoTexture(cut);
+  if (!maskRoot.children.includes(mesh)) {
+    clearMask();
+    photoMesh = mesh;
+    maskRoot.add(mesh);
+  }
+  showIdlePose();
+  setPreviewFromCanvas(cut, file.name || "Cutout ready");
+  setStatus(running ? "Mask on face — look at camera" : "Photo ready — start camera to lock it");
+  toast("Photo on screen");
+}
+
+async function loadModelFile(file) {
   const url = URL.createObjectURL(file);
   const name = (file.name || "").toLowerCase();
   try {
-    if (isImageFile(file)) {
-      clearMask();
-      const loaded = await loadPhotoMask(file);
-      maskRoot.add(loaded.mesh);
-      showIdlePose();
-      setPreviewFromCanvas(loaded.previewCanvas, file.name || "Cutout ready");
-      toast("Background punched out — drag Cutout if needed");
-      setStatus(running ? "Mask on face — look at camera" : "Cutout ready — start camera to lock it");
-      return;
-    }
-
     photoSource = null;
+    showPicked(null);
     let object;
     if (name.endsWith(".obj")) {
       object = await new OBJLoader().loadAsync(url);
@@ -420,19 +438,9 @@ async function loadUserMesh(file) {
     hidePreview();
     toast("Mask fitted");
     setStatus(running ? "Mask on face — look at camera" : "Mask loaded — start camera to lock it");
-  } catch (err) {
-    console.error(err);
-    toast("Could not load that file");
-    setStatus("Load failed");
   } finally {
     URL.revokeObjectURL(url);
   }
-}
-
-function onPicked(input) {
-  const f = input.files?.[0];
-  if (f) loadUserMesh(f);
-  input.value = "";
 }
 
 function morphTargets(root) {
@@ -491,6 +499,7 @@ function applyPose(result) {
   maskRoot.quaternion.copy(r);
   maskRoot.scale.setScalar(0.55);
   maskRoot.visible = true;
+  pickedEl.classList.remove("on");
 }
 
 async function initLandmarker() {
@@ -593,12 +602,39 @@ function saveRec() {
   toast("Video downloaded");
 }
 
+function openPicker(input) {
+  input.value = "";
+  input.click();
+}
+
 btnCam.addEventListener("click", startCamera);
+btnPhoto.addEventListener("click", () => openPicker(photoInput));
+btn3d.addEventListener("click", () => openPicker(meshInput));
 btnDemo.addEventListener("click", useBuiltin);
 btnRec.addEventListener("click", startRec);
 btnStop.addEventListener("click", stopRec);
-photoInput.addEventListener("change", () => onPicked(photoInput));
-meshInput.addEventListener("change", () => onPicked(meshInput));
+photoInput.addEventListener("change", async () => {
+  const f = photoInput.files?.[0];
+  if (!f) return;
+  try {
+    await loadPhotoFile(f);
+  } catch (err) {
+    console.error(err);
+    toast("Could not read that photo");
+    setStatus("Photo failed — try a screenshot or JPEG");
+  }
+});
+meshInput.addEventListener("change", async () => {
+  const f = meshInput.files?.[0];
+  if (!f) return;
+  try {
+    await loadModelFile(f);
+  } catch (err) {
+    console.error(err);
+    toast("Could not load that file");
+    setStatus("Load failed");
+  }
+});
 cutoutInput.addEventListener("input", rebuildPhotoCutout);
 
 useBuiltin();
