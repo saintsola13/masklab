@@ -79,85 +79,80 @@ function buildAudioGraph() {
   if (!stream || !stream.getAudioTracks().length) return false;
 
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // CRITICAL: source from mic stream only — never connect anything to audioCtx.destination
+  // All output goes ONLY to fxDest (MediaStreamDestination) so nothing plays through speakers
   micSource = audioCtx.createMediaStreamSource(stream);
-  fxDest = audioCtx.createMediaStreamDestination();
+  fxDest    = audioCtx.createMediaStreamDestination();
 
-  // ── Dry/Wet mix ──
-  dryGain = audioCtx.createGain();
-  wetGain = audioCtx.createGain();
-  dryGain.gain.value = 0;   // FX chain is the main path
-  wetGain.gain.value = 1;
-
-  // ── Pitch shift (ScriptProcessor resampler) ──
+  // ── Pitch shift (circular buffer resampler) ──
   pitchNode = audioCtx.createScriptProcessor(PITCH_BUFFER_SIZE, 1, 1);
-  let pitchBuffer = new Float32Array(PITCH_BUFFER_SIZE * 4);
+  const pitchBuffer = new Float32Array(PITCH_BUFFER_SIZE * 8);
   let writePos = 0;
-  let readPos = 0;
+  let readPos  = 0;
 
   pitchNode.onaudioprocess = (e) => {
-    const input = e.inputBuffer.getChannelData(0);
+    const input  = e.inputBuffer.getChannelData(0);
     const output = e.outputBuffer.getChannelData(0);
-    const rate = Math.pow(SEMITONE, pitchSemitones);
+    const rate   = Math.pow(SEMITONE, pitchSemitones);
+    const BUF    = pitchBuffer.length;
 
-    // Write input into circular buffer
     for (let i = 0; i < input.length; i++) {
-      pitchBuffer[writePos % pitchBuffer.length] = input[i];
+      pitchBuffer[writePos % BUF] = input[i];
       writePos++;
     }
-
-    // Read back at different rate
     for (let i = 0; i < output.length; i++) {
-      const pos = readPos % pitchBuffer.length;
-      const p0 = Math.floor(pos);
-      const p1 = (p0 + 1) % pitchBuffer.length;
-      const frac = pos - p0;
-      output[i] = pitchBuffer[p0] * (1 - frac) + pitchBuffer[p1] * frac;
-      readPos += rate;
+      const pos  = readPos % BUF;
+      const p0   = Math.floor(pos) % BUF;
+      const p1   = (p0 + 1) % BUF;
+      const frac = pos - Math.floor(pos);
+      output[i]  = pitchBuffer[p0] * (1 - frac) + pitchBuffer[p1] * frac;
+      readPos   += rate;
     }
-    // Keep read/write from drifting too far
-    while (readPos > writePos + PITCH_BUFFER_SIZE) readPos -= PITCH_BUFFER_SIZE;
-    while (writePos > readPos + PITCH_BUFFER_SIZE * 3) readPos += PITCH_BUFFER_SIZE;
+    // Drift correction — keep read within one buffer of write
+    const lag = writePos - readPos;
+    if (lag > PITCH_BUFFER_SIZE * 6) readPos += PITCH_BUFFER_SIZE;
+    if (lag < PITCH_BUFFER_SIZE)     readPos -= PITCH_BUFFER_SIZE;
   };
 
-  // ── Robot (ring modulator) ──
-  robotOsc = audioCtx.createOscillator();
-  robotOsc.type = "sawtooth";
-  robotOsc.frequency.value = 80;
+  // ── Robot: waveshaper distortion (no oscillator injection — that caused the buzz) ──
   robotGain = audioCtx.createGain();
-  robotGain.gain.value = 0; // off by default
+  robotGain.gain.value = 1;
+  const robotShaper = audioCtx.createWaveShaper();
+  const curve = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = (i * 2) / 256 - 1;
+    curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x)); // soft clip
+  }
+  robotShaper.curve = curve;
+  robotShaper.oversample = "4x";
 
-  const ringMod = audioCtx.createGain();
-  robotOsc.connect(robotGain);
-  // We'll connect robotGain as a gain modulator via a separate path
-
-  // ── Reverb (convolver with synthetic IR) ──
+  // ── Reverb (convolver + synthetic impulse response) ──
   reverbNode = audioCtx.createConvolver();
   reverbNode.buffer = buildImpulseResponse(audioCtx, 2.5, 3.2, false);
-
   const reverbWet = audioCtx.createGain();
   const reverbDry = audioCtx.createGain();
-  reverbWet.gain.value = 0; // off by default
+  reverbWet.gain.value = 0; // off until toggled
   reverbDry.gain.value = 1;
 
-  // ── Graph: mic → pitch → robot ring mod → reverb mix → dest ──
+  // ── Graph (NO connection to audioCtx.destination — recorder only) ──
+  //
+  //  mic → pitchNode → robotShaper → reverbDry → fxDest
+  //                               ↘ reverbNode → reverbWet → fxDest
+  //
   micSource.connect(pitchNode);
-
-  // Robot ring mod: multiply signal by oscillator
-  // Approximate ring mod: pitchNode → robotGain (mod depth controlled) → output
-  // True ring mod needs AudioWorklet; best browser approx: add osc into signal chain
-  pitchNode.connect(reverbDry);
-  pitchNode.connect(reverbNode);
-  robotOsc.connect(pitchNode); // add osc harmonics into the audio path (additive approx)
-
+  pitchNode.connect(robotShaper);
+  robotShaper.connect(reverbDry);
+  robotShaper.connect(reverbNode);
   reverbDry.connect(fxDest);
   reverbNode.connect(reverbWet);
   reverbWet.connect(fxDest);
+  // ← audioCtx.destination intentionally never connected
 
-  robotOsc.start();
-
-  // Store refs for toggle
+  // Store reverb gain refs for toggles
   vfxPanel._reverbWet = reverbWet;
   vfxPanel._reverbDry = reverbDry;
+  vfxPanel._robotShaper = robotShaper;
 
   return true;
 }
@@ -198,15 +193,26 @@ function toggleRobot() {
   vfxRobotBtn.textContent = robotOn ? "ON" : "OFF";
   vfxRobotBtn.style.color = robotOn ? "#ff2a3a" : "";
   vfxRobotBtn.style.borderColor = robotOn ? "rgba(255,42,58,0.7)" : "";
-  if (robotOsc) {
-    // Robot: boost oscillator frequency injection and add distortion feel
-    robotOsc.frequency.value = robotOn ? 60 : 80;
-    robotGain.gain.setTargetAtTime(robotOn ? 0.4 : 0, audioCtx.currentTime, 0.05);
-    // Detune pitch down slightly for robot voice
+  if (vfxPanel._robotShaper) {
+    // Robot = heavy waveshaper distortion curve. Swap between a hard clip (robot) and soft pass-through
+    const curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const x = (i * 2) / 256 - 1;
+      if (robotOn) {
+        // Aggressive quantize + hard clip = robot buzz without oscillator injection
+        const q = Math.round(x * 8) / 8;
+        curve[i] = Math.max(-1, Math.min(1, q * 1.8));
+      } else {
+        // Pass-through (linear)
+        curve[i] = x;
+      }
+    }
+    vfxPanel._robotShaper.curve = curve;
+    // Auto-nudge pitch darker when robot on
     if (robotOn && pitchSemitones === 0) {
-      pitchSemitones = -3;
-      vfxPitchEl.value = -3;
-      vfxPitchVal.textContent = "-3";
+      pitchSemitones = -4;
+      vfxPitchEl.value = -4;
+      vfxPitchVal.textContent = "-4";
     }
   }
   toast(robotOn ? "Robot on" : "Robot off");
