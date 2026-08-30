@@ -1,11 +1,28 @@
+@import url("https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@500;700&display=swap");
+
+:root {
+  --red: #ff2a3a;
+  --red-dim: rgba(255, 42, 58, 0.45);
+  --glass: rgba(10, 10, 14, 0.48);
+  --glass-edge: rgba(255, 255, 255, 0.16);
+  --ink: #f4f4f6;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; background: #050505; color: #fff; font-family: ui-sans-serif, system-ui, sans-serif; }
+html, body {
+  height: 100%;
+  background: #050506;
+  color: var(--ink);
+  font-family: "Share Tech Mono", ui-monospace, monospace;
+}
 #stage {
   position: relative;
   width: 100%;
   height: 100dvh;
   overflow: hidden;
-  background: #000;
+  background:
+    radial-gradient(120% 80% at 50% 110%, rgba(255, 20, 40, 0.16), transparent 55%),
+    #050506;
 }
 #cam {
   position: absolute;
@@ -23,80 +40,135 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
 #rec { display: none; }
 #hud {
   position: absolute;
-  top: max(12px, env(safe-area-inset-top));
-  left: 16px;
-  right: 16px;
+  top: max(10px, env(safe-area-inset-top));
+  left: 12px;
+  right: 12px;
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   pointer-events: none;
   z-index: 3;
+  gap: 10px;
 }
-#brand { letter-spacing: 0.35em; font-size: 12px; font-weight: 600; }
-#status { font-size: 12px; color: rgba(255,255,255,0.75); text-align: right; max-width: 60%; }
+#brand, #status {
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.35), 0 0 18px rgba(255, 42, 58, 0.12);
+}
+#brand {
+  font-family: Orbitron, sans-serif;
+  letter-spacing: 0.42em;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-radius: 12px;
+}
+#status {
+  font-size: 11px;
+  color: rgba(255,255,255,0.82);
+  text-align: right;
+  max-width: 62%;
+  padding: 8px 12px;
+  border-radius: 12px;
+}
 #preview {
   position: absolute;
-  top: max(44px, calc(env(safe-area-inset-top) + 36px));
-  left: 16px;
+  top: max(52px, calc(env(safe-area-inset-top) + 44px));
+  left: 12px;
   display: flex;
   align-items: center;
   gap: 10px;
   z-index: 4;
-  background: rgba(12,12,12,0.78);
-  border: 1px solid rgba(255,255,255,0.22);
-  border-radius: 14px;
-  padding: 6px 10px 6px 6px;
-  backdrop-filter: blur(10px);
-  max-width: calc(100% - 32px);
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  border-radius: 16px;
+  padding: 8px 12px 8px 8px;
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: 0 14px 30px rgba(0,0,0,0.4), 0 0 22px rgba(255, 42, 58, 0.16);
+  max-width: calc(100% - 24px);
 }
 #preview[hidden] { display: none; }
 #preview-img {
   width: 48px;
   height: 48px;
   object-fit: contain;
-  border-radius: 8px;
-  background: #222;
+  border-radius: 10px;
+  background: #111;
+  border: 1px solid rgba(255,42,58,0.25);
 }
-#preview-meta { display: flex; flex-direction: column; gap: 6px; }
-#preview-label { font-size: 12px; }
+#preview-meta { display: flex; flex-direction: column; gap: 5px; }
+#preview-label { font-size: 11px; letter-spacing: 0.04em; }
 #cutout-wrap {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 10px;
   color: rgba(255,255,255,0.7);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
-#cutout, #size, #nudge, #slide { width: 110px; accent-color: #fff; }
+#cutout, #size, #nudge, #slide {
+  width: 110px;
+  accent-color: var(--red);
+}
 #dock {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: max(16px, env(safe-area-inset-bottom));
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: center;
+  left: 10px;
+  right: 10px;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
   z-index: 4;
 }
 button, .file-btn {
   appearance: none;
-  border: 1px solid rgba(255,255,255,0.28);
-  background: rgba(12,12,12,0.72);
-  color: #fff;
+  border: 1px solid var(--glass-edge);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.03) 38%, rgba(8,8,10,0.55));
+  color: var(--ink);
   font: inherit;
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  padding: 12px 16px;
-  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 14px 8px;
+  border-radius: 16px;
   cursor: pointer;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(16px) saturate(1.5);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
   position: relative;
   overflow: hidden;
+  min-height: 48px;
+  box-shadow:
+    0 10px 0 -6px rgba(255, 20, 40, 0.95),
+    0 16px 28px rgba(255, 20, 40, 0.28),
+    0 8px 18px rgba(0,0,0,0.45);
 }
-button.primary { background: #fff; color: #111; border-color: #fff; }
+button::after, .file-btn::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: -7px;
+  height: 10px;
+  border-radius: 999px;
+  background: radial-gradient(circle, var(--red) 0%, transparent 72%);
+  filter: blur(6px);
+  pointer-events: none;
+}
+button.primary {
+  background:
+    linear-gradient(180deg, rgba(255,70,80,0.35), rgba(20,8,10,0.55));
+  border-color: rgba(255, 80, 90, 0.45);
+  color: #fff;
+}
 button[disabled], .file-btn.locked {
   opacity: 0.38;
   pointer-events: none;
+  box-shadow: 0 8px 0 -6px rgba(255, 20, 40, 0.2), 0 8px 14px rgba(0,0,0,0.35);
 }
 .file-btn input[type="file"] {
   position: absolute;
@@ -111,12 +183,15 @@ button[disabled], .file-btn.locked {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  background: rgba(0,0,0,0.75);
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
   padding: 12px 16px;
-  border-radius: 10px;
+  border-radius: 14px;
   z-index: 5;
   max-width: 80%;
   text-align: center;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 0 24px rgba(255, 42, 58, 0.25);
 }
 #save-sheet {
   position: absolute;
@@ -135,11 +210,14 @@ button[disabled], .file-btn.locked {
   width: min(100%, 420px);
   max-height: 52dvh;
   background: #111;
-  border-radius: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--glass-edge);
+  box-shadow: 0 20px 40px rgba(255, 20, 40, 0.2);
 }
 #save-hint {
-  font-size: 13px;
+  font-size: 12px;
   color: rgba(255,255,255,0.8);
   text-align: center;
   max-width: 320px;
 }
+#save-sheet button { width: min(100%, 280px); }
