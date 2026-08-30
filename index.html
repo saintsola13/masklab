@@ -17,7 +17,13 @@
     </div>
     <div id="preview" hidden>
       <img id="preview-img" alt="Selected photo" />
-      <span id="preview-label">Photo ready</span>
+      <div id="preview-meta">
+        <span id="preview-label">Photo ready</span>
+        <label id="cutout-wrap">
+          Cutout
+          <input id="cutout" type="range" min="0" max="80" value="34" />
+        </label>
+      </div>
     </div>
     <div id="dock">
       <button id="btn-cam" class="primary">Start camera</button>
