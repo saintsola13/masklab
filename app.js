@@ -5,6 +5,7 @@ const statusEl = document.getElementById("status");
 const toastEl = document.getElementById("toast");
 const btnCam = document.getElementById("btn-cam");
 const btnAttach = document.getElementById("btn-attach");
+const btnLock = document.getElementById("btn-lock");
 const btnRec = document.getElementById("btn-rec");
 const btnStop = document.getElementById("btn-stop");
 const photoBtn = document.getElementById("photo-btn");
@@ -15,6 +16,7 @@ const previewLabel = document.getElementById("preview-label");
 const cutoutInput = document.getElementById("cutout");
 const sizeInput = document.getElementById("size");
 const nudgeInput = document.getElementById("nudge");
+const slideInput = document.getElementById("slide");
 
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
@@ -27,6 +29,7 @@ let face = null;
 let photoSource = null;
 let cutout = null;
 let attached = false;
+let locked = false;
 let recorder = null;
 let recChunks = [];
 
@@ -191,7 +194,6 @@ async function decodePhoto(file) {
 function faceAnchor(landmarks) {
   const forehead = toCanvas(landmarks[10]);
   const chin = toCanvas(landmarks[152]);
-  const nose = toCanvas(landmarks[1]);
   const a = toCanvas(landmarks[234]);
   const b = toCanvas(landmarks[454]);
   const left = a.x < b.x ? a : b;
@@ -203,7 +205,6 @@ function faceAnchor(landmarks) {
   return {
     forehead,
     chin,
-    nose,
     left,
     right,
     cx: (left.x + right.x) * 0.5,
@@ -224,8 +225,9 @@ function maskRect(landmarks) {
     dh = dw / aspect;
   }
   const nudge = (Number(nudgeInput?.value) || 38) / 100;
+  const slide = (Number(slideInput?.value) || 0) / 100;
   return {
-    cx: a.cx,
+    cx: a.cx + dw * slide,
     cy: a.chin.y - dh * 0.48 + dh * nudge,
     dw,
     dh,
@@ -318,9 +320,23 @@ function attach() {
     return;
   }
   attached = true;
+  locked = false;
+  btnLock.disabled = false;
+  btnRec.disabled = true;
+  setStatus("Slide / Size / Nudge, then Lock");
+  toast("Attached — line it up, then Lock");
+}
+
+function lockFit() {
+  if (!attached) {
+    toast("Attach first");
+    return;
+  }
+  locked = true;
   btnRec.disabled = false;
-  setStatus("Attached — Size / Nudge, then Record");
-  toast("Mask attached");
+  btnLock.textContent = "Locked";
+  setStatus("Locked — Record when ready");
+  toast("Fit locked");
 }
 
 function loop() {
@@ -348,7 +364,10 @@ function pickRecorder() {
 }
 
 function startRec() {
-  if (!attached || !running) return;
+  if (!attached || !running || !locked) {
+    toast("Lock the fit first");
+    return;
+  }
   recChunks = [];
   compositeTo(recCtx);
   recorder = pickRecorder();
@@ -381,6 +400,7 @@ function saveRec() {
 
 btnCam.addEventListener("click", startCamera);
 btnAttach.addEventListener("click", attach);
+btnLock.addEventListener("click", lockFit);
 btnRec.addEventListener("click", startRec);
 btnStop.addEventListener("click", stopRec);
 photoInput.addEventListener("change", async () => {
@@ -396,6 +416,10 @@ photoInput.addEventListener("change", async () => {
     previewLabel.textContent = "Cutout ready — Attach";
     btnAttach.disabled = false;
     attached = false;
+    locked = false;
+    btnLock.disabled = true;
+    btnLock.textContent = "4. Lock";
+    btnRec.disabled = true;
     setStatus(face ? "Tap Attach" : "Look at camera, then Attach");
     toast("Photo cut out — tap Attach");
   } catch (err) {
