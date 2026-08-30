@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <title>M4SK</title>
-  <link rel="stylesheet" href="styles.css?v=7" />
+  <link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body>
   <div id="stage">
@@ -38,28 +38,6 @@
       </div>
     </div>
     <div id="library" hidden></div>
-
-    <!-- VOICE FX PANEL -->
-    <div id="vfx-panel" hidden>
-      <div class="vfx-title">VOICE FX</div>
-      <label class="vfx-row">
-        <span class="vfx-label">PITCH</span>
-        <input id="vfx-pitch" type="range" min="-12" max="12" value="0" step="1" />
-        <span class="vfx-val" id="vfx-pitch-val">0</span>
-      </label>
-      <label class="vfx-row vfx-toggle-row">
-        <span class="vfx-label">ROBOT</span>
-        <button id="vfx-robot" class="vfx-btn" type="button">OFF</button>
-      </label>
-      <label class="vfx-row vfx-toggle-row">
-        <span class="vfx-label">REVERB</span>
-        <button id="vfx-reverb" class="vfx-btn" type="button">OFF</button>
-      </label>
-    </div>
-
-    <!-- VFX FLOAT BUTTON - lives outside dock, doesn't affect step flow -->
-    <button id="btn-vfx" type="button" disabled>🎙 FX</button>
-
     <div id="save-sheet" hidden>
       <video id="save-video" playsinline controls></video>
       <p id="save-hint">Tap Save to Photos, or hold the video and choose Save Video</p>
@@ -79,6 +57,6 @@
     </div>
     <div id="toast" hidden></div>
   </div>
-  <script type="module" src="app.js?v=7"></script>
+  <script type="module" src="app.js?v=8"></script>
 </body>
 </html>
