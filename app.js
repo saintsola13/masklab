@@ -49,143 +49,108 @@ let lastFile = null;
 let lastUrl = null;
 
 // ── VOICE FX STATE ────────────────────────────────────────────────────────────
-let audioCtx = null;
-let micSource = null;
-let fxDest = null;       // MediaStreamDestination — what recorder hears
-let pitchNode = null;    // ScriptProcessor for pitch shift
-let robotOsc = null;     // ring mod oscillator
-let robotGain = null;
-let reverbNode = null;
-let dryGain = null;
-let wetGain = null;
-let vfxOn = false;
-let robotOn = false;
-let reverbOn = false;
+let audioCtx      = null;
+let micSource     = null;
+let fxDest        = null;
+let robotOsc      = null;
+let robotRing     = null;
+let reverbNode    = null;
+let reverbWet     = null;
+let reverbDry     = null;
+let vfxOn         = false;
+let robotOn       = false;
+let reverbOn      = false;
 let pitchSemitones = 0;
-
-// Simple pitch shift via playback rate on a buffer — we use a phase vocoder
-// approximation: resample mic through MediaRecorder detour is too complex,
-// so we use a ScriptProcessor that reads mic samples and resamples in small chunks.
-// For clean results we use the Web Audio API pitch shifter via detune on a buffer source.
-// Best practical approach in browser: route mic → MediaStreamSource → pitchShifter chain.
-
-// We'll implement pitch shift using a continuously running buffer trick:
-// mic → ScriptProcessor (collect samples) → resample at different rate → output
-
-const PITCH_BUFFER_SIZE = 4096;
-const SEMITONE = Math.pow(2, 1/12);
 
 function buildAudioGraph() {
   if (!stream || !stream.getAudioTracks().length) return false;
 
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-  // CRITICAL: source from mic stream only — never connect anything to audioCtx.destination
-  // All output goes ONLY to fxDest (MediaStreamDestination) so nothing plays through speakers
+  audioCtx  = new (window.AudioContext || window.webkitAudioContext)();
   micSource = audioCtx.createMediaStreamSource(stream);
   fxDest    = audioCtx.createMediaStreamDestination();
 
-  // ── Pitch shift (circular buffer resampler) ──
-  pitchNode = audioCtx.createScriptProcessor(PITCH_BUFFER_SIZE, 1, 1);
-  const pitchBuffer = new Float32Array(PITCH_BUFFER_SIZE * 8);
-  let writePos = 0;
-  let readPos  = 0;
+  // ── Silent node to destination ────────────────────────────────────────────
+  // Web Audio REQUIRES a path to destination for the graph to process.
+  // We connect a gain=0 node so the engine runs but speakers hear nothing.
+  const silentGain = audioCtx.createGain();
+  silentGain.gain.value = 0;
+  silentGain.connect(audioCtx.destination);
 
-  pitchNode.onaudioprocess = (e) => {
-    const input  = e.inputBuffer.getChannelData(0);
-    const output = e.outputBuffer.getChannelData(0);
-    const rate   = Math.pow(SEMITONE, pitchSemitones);
-    const BUF    = pitchBuffer.length;
+  // ── Pitch (formant shift via shelf filters) ───────────────────────────────
+  // True semitone shift needs AudioWorklet. Shelf filters give a convincing
+  // deep/high voice effect that's lightweight and works on all mobile browsers.
+  const lowShelf  = audioCtx.createBiquadFilter();
+  lowShelf.type   = "lowshelf";
+  lowShelf.frequency.value = 350;
+  lowShelf.gain.value = 0;
 
-    for (let i = 0; i < input.length; i++) {
-      pitchBuffer[writePos % BUF] = input[i];
-      writePos++;
-    }
-    for (let i = 0; i < output.length; i++) {
-      const pos  = readPos % BUF;
-      const p0   = Math.floor(pos) % BUF;
-      const p1   = (p0 + 1) % BUF;
-      const frac = pos - Math.floor(pos);
-      output[i]  = pitchBuffer[p0] * (1 - frac) + pitchBuffer[p1] * frac;
-      readPos   += rate;
-    }
-    // Drift correction — keep read within one buffer of write
-    const lag = writePos - readPos;
-    if (lag > PITCH_BUFFER_SIZE * 6) readPos += PITCH_BUFFER_SIZE;
-    if (lag < PITCH_BUFFER_SIZE)     readPos -= PITCH_BUFFER_SIZE;
-  };
+  const highShelf  = audioCtx.createBiquadFilter();
+  highShelf.type   = "highshelf";
+  highShelf.frequency.value = 2200;
+  highShelf.gain.value = 0;
 
-  // ── Ring modulator (TRUE robot effect) ──
-  // mic signal multiplied by oscillator — NOT added, MULTIPLIED.
-  // ringModGain.gain is driven by the oscillator so it oscillates between -1 and +1
-  // This chops the signal at the osc frequency = classic robot voice.
-  // The oscillator connects to the GAIN PARAM only — never into the signal path.
-  // Zero feedback risk.
+  // ── Ring modulator (robot) ────────────────────────────────────────────────
+  // Oscillator modulates robotRing.gain AudioParam only.
+  // Never injected into signal path — no feedback.
+  robotRing = audioCtx.createGain();
+  robotRing.gain.value = 1; // unity = robot off
+
   robotOsc = audioCtx.createOscillator();
   robotOsc.type = "sine";
-  robotOsc.frequency.value = 80; // 80Hz ring = robotic, tweak in toggleRobot
-
-  const oscGain = audioCtx.createGain();
-  oscGain.gain.value = 1.0; // full modulation depth
-
-  // ringModGain starts at 0 gain (robot off) — driven by oscGain when on
-  robotGain = audioCtx.createGain();
-  robotGain.gain.value = 1; // when robot off, pass signal through at unity
-
-  robotOsc.connect(oscGain);
-  // oscGain drives robotGain.gain AudioParam — this is the ring mod
-  // We'll connect/disconnect oscGain → robotGain.gain on toggle
-
+  robotOsc.frequency.value = 80;
   robotOsc.start();
-  vfxPanel._oscGain = oscGain;
 
-  // ── Reverb (convolver + synthetic impulse response) ──
+  const oscMod = audioCtx.createGain();
+  oscMod.gain.value = 1;
+  robotOsc.connect(oscMod);
+  audioCtx._oscMod = oscMod;  // saved for toggle connect/disconnect
+
+  // ── Reverb ────────────────────────────────────────────────────────────────
   reverbNode = audioCtx.createConvolver();
-  reverbNode.buffer = buildImpulseResponse(audioCtx, 2.5, 3.2, false);
-  const reverbWet = audioCtx.createGain();
-  const reverbDry = audioCtx.createGain();
+  reverbNode.buffer = makeIR(audioCtx, 2.2, 3.5);
+  reverbWet = audioCtx.createGain();
+  reverbDry = audioCtx.createGain();
   reverbWet.gain.value = 0;
   reverbDry.gain.value = 1;
 
-  // ── Graph (nothing touches audioCtx.destination) ──
+  // ── Graph ─────────────────────────────────────────────────────────────────
   //
-  //  mic → pitchNode → robotGain → reverbDry → fxDest
-  //                             ↘ reverbNode → reverbWet → fxDest
+  //  mic → lowShelf → highShelf → robotRing → reverbDry ──→ fxDest
+  //                                          ↘ reverbNode → reverbWet → fxDest
+  //                                          ↘ silentGain (gain=0) → destination
   //
-  //  oscGain → robotGain.gain  (modulates gain param, not signal — ring mod)
+  //  oscMod → robotRing.gain  [ring modulator, no signal injection]
   //
-  micSource.connect(pitchNode);
-  pitchNode.connect(robotGain);
-  robotGain.connect(reverbDry);
-  robotGain.connect(reverbNode);
+  micSource.connect(lowShelf);
+  lowShelf.connect(highShelf);
+  highShelf.connect(robotRing);
+  robotRing.connect(reverbDry);
+  robotRing.connect(reverbNode);
+  robotRing.connect(silentGain);  // keeps audio engine alive
   reverbDry.connect(fxDest);
   reverbNode.connect(reverbWet);
   reverbWet.connect(fxDest);
-  // ← audioCtx.destination never connected
 
-  vfxPanel._reverbWet = reverbWet;
-  vfxPanel._reverbDry = reverbDry;
+  audioCtx._lowShelf  = lowShelf;
+  audioCtx._highShelf = highShelf;
 
   return true;
 }
 
-function buildImpulseResponse(ctx, duration, decay, reverse) {
-  const rate = ctx.sampleRate;
-  const length = Math.round(rate * duration);
-  const impulse = ctx.createBuffer(2, length, rate);
+function makeIR(ctx, duration, decay) {
+  const len = Math.round(ctx.sampleRate * duration);
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
   for (let c = 0; c < 2; c++) {
-    const ch = impulse.getChannelData(c);
-    for (let i = 0; i < length; i++) {
-      const n = reverse ? length - i : i;
-      ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - n / length, decay);
-    }
+    const ch = buf.getChannelData(c);
+    for (let i = 0; i < len; i++)
+      ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
   }
-  return impulse;
+  return buf;
 }
 
 function toggleVfxPanel() {
   if (!running) { toast("Start camera first"); return; }
-  if (!stream?.getAudioTracks().length) { toast("No mic — voice FX needs mic access"); return; }
+  if (!stream?.getAudioTracks().length) { toast("No mic — FX needs mic"); return; }
 
   vfxOn = !vfxOn;
   vfxPanel.hidden = !vfxOn;
@@ -194,55 +159,52 @@ function toggleVfxPanel() {
 
   if (vfxOn && !audioCtx) {
     const ok = buildAudioGraph();
-    if (!ok) { toast("No mic for voice FX"); vfxOn = false; vfxPanel.hidden = true; return; }
-    toast("Voice FX ready");
+    if (!ok) { vfxOn = false; vfxPanel.hidden = true; toast("No mic"); return; }
+    audioCtx.resume(); // required on mobile after user gesture
+    toast("Voice FX on");
+  } else if (vfxOn && audioCtx) {
+    audioCtx.resume();
+  } else if (!vfxOn && audioCtx) {
+    audioCtx.suspend();
   }
 }
 
 function toggleRobot() {
+  if (!audioCtx) { toast("Turn on FX first"); return; }
   robotOn = !robotOn;
   vfxRobotBtn.textContent = robotOn ? "ON" : "OFF";
   vfxRobotBtn.style.color = robotOn ? "#ff2a3a" : "";
   vfxRobotBtn.style.borderColor = robotOn ? "rgba(255,42,58,0.7)" : "";
-
-  if (robotOsc && vfxPanel._oscGain && robotGain) {
-    if (robotOn) {
-      // Ring mod ON:
-      // Set robotGain.gain to 0 — oscGain will drive it between -1 and +1
-      robotGain.gain.setValueAtTime(0, audioCtx.currentTime);
-      // Connect oscillator to gain AudioParam (ring modulation)
-      vfxPanel._oscGain.connect(robotGain.gain);
-      robotOsc.frequency.value = 80;
-      // Auto-darken pitch for robot feel
-      if (pitchSemitones === 0) {
-        pitchSemitones = -4;
-        vfxPitchEl.value = -4;
-        vfxPitchVal.textContent = "-4";
-      }
-    } else {
-      // Ring mod OFF: disconnect osc from gain param, restore unity gain
-      try { vfxPanel._oscGain.disconnect(robotGain.gain); } catch(_) {}
-      robotGain.gain.setValueAtTime(1, audioCtx.currentTime);
-    }
+  if (robotOn) {
+    robotRing.gain.setValueAtTime(0, audioCtx.currentTime);
+    audioCtx._oscMod.connect(robotRing.gain); // ring mod ON
+    robotOsc.frequency.value = 80;
+  } else {
+    try { audioCtx._oscMod.disconnect(robotRing.gain); } catch(_) {}
+    robotRing.gain.setValueAtTime(1, audioCtx.currentTime); // bypass
   }
   toast(robotOn ? "Robot on" : "Robot off");
 }
 
 function toggleReverb() {
+  if (!audioCtx) { toast("Turn on FX first"); return; }
   reverbOn = !reverbOn;
   vfxReverbBtn.textContent = reverbOn ? "ON" : "OFF";
   vfxReverbBtn.style.color = reverbOn ? "#ff2a3a" : "";
   vfxReverbBtn.style.borderColor = reverbOn ? "rgba(255,42,58,0.7)" : "";
-  if (vfxPanel._reverbWet) {
-    vfxPanel._reverbWet.gain.setTargetAtTime(reverbOn ? 0.65 : 0, audioCtx.currentTime, 0.05);
-    vfxPanel._reverbDry.gain.setTargetAtTime(reverbOn ? 0.45 : 1, audioCtx.currentTime, 0.05);
-  }
+  reverbWet.gain.setTargetAtTime(reverbOn ? 0.7 : 0,  audioCtx.currentTime, 0.05);
+  reverbDry.gain.setTargetAtTime(reverbOn ? 0.4 : 1,  audioCtx.currentTime, 0.05);
   toast(reverbOn ? "Reverb on" : "Reverb off");
 }
 
 vfxPitchEl.addEventListener("input", () => {
   pitchSemitones = Number(vfxPitchEl.value);
   vfxPitchVal.textContent = pitchSemitones > 0 ? `+${pitchSemitones}` : String(pitchSemitones);
+  if (!audioCtx) return;
+  // Negative = deeper: boost lows, cut highs. Positive = higher: opposite.
+  const s = pitchSemitones;
+  audioCtx._lowShelf.gain.setTargetAtTime(s * -3,  audioCtx.currentTime, 0.05);
+  audioCtx._highShelf.gain.setTargetAtTime(s * 3,  audioCtx.currentTime, 0.05);
 });
 vfxRobotBtn.addEventListener("click", toggleRobot);
 vfxReverbBtn.addEventListener("click", toggleReverb);
