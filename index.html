@@ -37,6 +37,12 @@
         </label>
       </div>
     </div>
+    <div id="save-sheet" hidden>
+      <video id="save-video" playsinline controls></video>
+      <p id="save-hint">Tap Save to Photos, or hold the video and choose Save Video</p>
+      <button id="btn-save-photos" class="primary" type="button">Save to Photos</button>
+      <button id="btn-save-close" type="button">Done</button>
+    </div>
     <div id="dock">
       <button id="btn-cam" class="primary" type="button">1. Start camera</button>
       <div id="photo-btn" class="file-btn locked">
@@ -50,6 +56,6 @@
     </div>
     <div id="toast" hidden></div>
   </div>
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=3"></script>
 </body>
 </html>
