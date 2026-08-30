@@ -17,25 +17,6 @@ const cutoutInput = document.getElementById("cutout");
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
 
-const KEYS = [10, 127, 234, 93, 132, 58, 172, 136, 150, 176, 152, 400, 377, 379, 365, 397, 288, 361, 323, 454, 356,
-  168, 1, 4,
-  33, 133, 159, 145,
-  263, 362, 386, 374,
-  61, 291, 13, 14, 17, 0];
-
-const TRI = [
-  [0, 1, 24], [0, 24, 26], [0, 26, 25], [0, 25, 21], [0, 21, 29], [0, 29, 30], [0, 30, 28], [0, 28, 20],
-  [1, 2, 24], [20, 28, 19],
-  [2, 3, 32], [19, 18, 33],
-  [21, 25, 22], [21, 29, 22],
-  [24, 26, 27], [25, 26, 27], [28, 30, 31], [29, 30, 31],
-  [22, 25, 34], [22, 29, 34], [22, 34, 37],
-  [32, 34, 37], [33, 34, 37], [32, 35, 36], [33, 35, 36], [32, 34, 35], [33, 34, 35],
-  [32, 36, 8], [33, 36, 12], [8, 10, 36], [12, 10, 36],
-  [2, 32, 5], [5, 32, 8], [5, 8, 10], [19, 33, 16], [16, 33, 12], [16, 12, 10],
-  [1, 2, 5], [20, 19, 16], [5, 6, 10], [16, 15, 10],
-];
-
 let landmarker = null;
 let stream = null;
 let running = false;
@@ -45,7 +26,6 @@ let blends = {};
 let photoSource = null;
 let cutout = null;
 let attached = false;
-let restUV = null;
 let recorder = null;
 let recChunks = [];
 
@@ -174,7 +154,6 @@ function rebuildCutout() {
   if (!photoSource) return;
   cutout = floodCutout(photoSource, Number(cutoutInput.value));
   previewImg.src = cutout.toDataURL("image/png");
-  if (attached && face) captureRest(face);
 }
 
 function drawSource(imgLike) {
@@ -216,33 +195,18 @@ function faceFit(landmarks) {
   const nose = toCanvas(landmarks[1]);
   const left = a.x < b.x ? a : b;
   const right = a.x < b.x ? b : a;
-  const width = Math.hypot(right.x - left.x, right.y - left.y) * 2.15;
-  const height = Math.hypot(chin.x - forehead.x, chin.y - forehead.y) * 1.48;
+  const width = Math.hypot(right.x - left.x, right.y - left.y) * 2.2;
+  const height = Math.hypot(chin.x - forehead.x, chin.y - forehead.y) * 1.55;
   let angle = Math.atan2(right.y - left.y, right.x - left.x);
   if (angle > Math.PI / 2) angle -= Math.PI;
   if (angle < -Math.PI / 2) angle += Math.PI;
-  return { cx: nose.x, cy: forehead.y * 0.28 + chin.y * 0.72, width, height, angle };
-}
-
-function keyPoints(landmarks) {
-  return KEYS.map((i) => toCanvas(landmarks[i]));
-}
-
-function captureRest(landmarks) {
-  const box = faceFit(landmarks);
-  const pts = keyPoints(landmarks);
-  const cos = Math.cos(-box.angle);
-  const sin = Math.sin(-box.angle);
-  restUV = pts.map((p) => {
-    const lx = p.x - box.cx;
-    const ly = p.y - box.cy;
-    const rx = lx * cos - ly * sin;
-    const ry = lx * sin + ly * cos;
-    return {
-      u: rx / box.width + 0.5,
-      v: ry / box.height + 0.5,
-    };
-  });
+  return {
+    cx: nose.x,
+    cy: forehead.y * 0.32 + chin.y * 0.68,
+    width,
+    height,
+    angle,
+  };
 }
 
 function drawVideo() {
@@ -273,41 +237,15 @@ function drawMap() {
   ctx.restore();
 }
 
-function affineDraw(img, s0, s1, s2, d0, d1, d2) {
-  const denom = s0.x * (s1.y - s2.y) + s1.x * (s2.y - s0.y) + s2.x * (s0.y - s1.y);
-  if (Math.abs(denom) < 1e-4) return;
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(d0.x, d0.y);
-  ctx.lineTo(d1.x, d1.y);
-  ctx.lineTo(d2.x, d2.y);
-  ctx.closePath();
-  ctx.clip();
-  const m11 = (d0.x * (s1.y - s2.y) + d1.x * (s2.y - s0.y) + d2.x * (s0.y - s1.y)) / denom;
-  const m12 = (d0.x * (s2.x - s1.x) + d1.x * (s0.x - s2.x) + d2.x * (s1.x - s0.x)) / denom;
-  const m13 = (d0.x * (s1.x * s2.y - s2.x * s1.y) + d1.x * (s2.x * s0.y - s0.x * s2.y) + d2.x * (s0.x * s1.y - s1.x * s0.y)) / denom;
-  const m21 = (d0.y * (s1.y - s2.y) + d1.y * (s2.y - s0.y) + d2.y * (s0.y - s1.y)) / denom;
-  const m22 = (d0.y * (s2.x - s1.x) + d1.y * (s0.x - s2.x) + d2.y * (s1.x - s0.x)) / denom;
-  const m23 = (d0.y * (s1.x * s2.y - s2.x * s1.y) + d1.y * (s2.x * s0.y - s0.x * s2.y) + d2.y * (s0.x * s1.y - s1.x * s0.y)) / denom;
-  ctx.setTransform(m11, m21, m12, m22, m13, m23);
-  ctx.drawImage(img, 0, 0);
-  ctx.restore();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+function drawBand(img, dx, dy, dw, dh, sy0, sy1, destY, destH) {
+  const sh = img.height;
+  const srcY = sy0 * sh;
+  const srcH = Math.max(1, (sy1 - sy0) * sh);
+  ctx.drawImage(img, 0, srcY, img.width, srcH, dx, destY, dw, destH);
 }
 
-function drawWarped() {
-  const dest = keyPoints(face);
-  const w = cutout.width;
-  const h = cutout.height;
-  const src = restUV.map((p) => ({ x: p.u * w, y: p.v * h }));
-  ctx.imageSmoothingEnabled = true;
-  for (const t of TRI) {
-    if (t[0] >= dest.length || t[1] >= dest.length || t[2] >= dest.length) continue;
-    affineDraw(cutout, src[t[0]], src[t[1]], src[t[2]], dest[t[0]], dest[t[1]], dest[t[2]]);
-  }
-}
-
-function drawFallback() {
+function drawMask() {
+  if (!attached || !cutout || !face) return;
   const box = faceFit(face);
   const aspect = cutout.width / Math.max(cutout.height, 1);
   let dw = box.width;
@@ -316,26 +254,38 @@ function drawFallback() {
     dh = box.height;
     dw = dh * aspect;
   }
-  const blink = Math.max(blends.eyeBlinkLeft || 0, blends.eyeBlinkRight || 0);
-  const jaw = blends.jawOpen || 0;
-  dh *= 1 + jaw * 0.22;
+  const jaw = Math.min(1, blends.jawOpen || 0);
+  const blinkL = Math.min(1, blends.eyeBlinkLeft || 0);
+  const blinkR = Math.min(1, blends.eyeBlinkRight || 0);
+  const blink = Math.max(blinkL, blinkR);
+
+  const dx = -dw / 2;
+  const dy = -dh / 2;
+  const eyeStart = 0.28;
+  const eyeEnd = 0.48;
+  const mouthStart = 0.58;
+
   ctx.save();
   ctx.translate(box.cx, box.cy);
   ctx.rotate(box.angle);
-  ctx.drawImage(cutout, -dw / 2, -dh / 2, dw, dh);
-  if (blink > 0.35) {
-    ctx.fillStyle = `rgba(20,10,10,${Math.min(0.85, blink)})`;
-    const eyeY = -dh * 0.12;
-    ctx.fillRect(-dw * 0.28, eyeY - 4, dw * 0.2, 8 + blink * 10);
-    ctx.fillRect(dw * 0.08, eyeY - 4, dw * 0.2, 8 + blink * 10);
-  }
-  ctx.restore();
-}
 
-function drawMask() {
-  if (!attached || !cutout || !face) return;
-  if (restUV) drawWarped();
-  else drawFallback();
+  const topH = dh * eyeStart;
+  drawBand(cutout, dx, dy, dw, dh, 0, eyeStart, dy, topH);
+
+  const eyeH = dh * (eyeEnd - eyeStart);
+  const eyeSquash = 1 - blink * 0.78;
+  const eyeDrawH = eyeH * eyeSquash;
+  const eyeY = dy + topH + (eyeH - eyeDrawH) * 0.55;
+  drawBand(cutout, dx, dy, dw, dh, eyeStart, eyeEnd, eyeY, eyeDrawH);
+
+  const midH = dh * (mouthStart - eyeEnd);
+  drawBand(cutout, dx, dy, dw, dh, eyeEnd, mouthStart, dy + topH + eyeH, midH);
+
+  const mouthH = dh * (1 - mouthStart);
+  const mouthStretch = 1 + jaw * 0.55;
+  drawBand(cutout, dx, dy, dw, dh, mouthStart, 1, dy + topH + eyeH + midH, mouthH * mouthStretch);
+
+  ctx.restore();
 }
 
 function compositeTo(target) {
@@ -399,7 +349,6 @@ function attach() {
     toast("Look at the camera so the face map locks");
     return;
   }
-  captureRest(face);
   attached = true;
   btnRec.disabled = false;
   setStatus("Attached — move, talk, blink, then Record");
@@ -480,7 +429,6 @@ photoInput.addEventListener("change", async () => {
     previewLabel.textContent = "Cutout ready — Attach";
     btnAttach.disabled = false;
     attached = false;
-    restUV = null;
     setStatus(face ? "Tap Attach" : "Look at camera, then Attach");
     toast("Photo cut out — tap Attach");
   } catch (err) {
