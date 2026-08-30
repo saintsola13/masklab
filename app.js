@@ -14,6 +14,7 @@ const previewImg = document.getElementById("preview-img");
 const previewLabel = document.getElementById("preview-label");
 const cutoutInput = document.getElementById("cutout");
 const sizeInput = document.getElementById("size");
+const nudgeInput = document.getElementById("nudge");
 
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
@@ -190,6 +191,7 @@ async function decodePhoto(file) {
 function faceAnchor(landmarks) {
   const forehead = toCanvas(landmarks[10]);
   const chin = toCanvas(landmarks[152]);
+  const nose = toCanvas(landmarks[1]);
   const a = toCanvas(landmarks[234]);
   const b = toCanvas(landmarks[454]);
   const left = a.x < b.x ? a : b;
@@ -201,6 +203,7 @@ function faceAnchor(landmarks) {
   return {
     forehead,
     chin,
+    nose,
     left,
     right,
     cx: (left.x + right.x) * 0.5,
@@ -213,7 +216,6 @@ function faceAnchor(landmarks) {
 function maskRect(landmarks) {
   const a = faceAnchor(landmarks);
   const aspect = cutout.width / Math.max(cutout.height, 1);
-  // Lower 58% of the sticker is treated as the face; hat rides above the forehead.
   const faceFrac = 0.58;
   let dh = a.faceH / faceFrac;
   let dw = dh * aspect;
@@ -221,10 +223,10 @@ function maskRect(landmarks) {
     dw = a.faceW;
     dh = dw / aspect;
   }
-  const hatFrac = 1 - faceFrac;
+  const nudge = (Number(nudgeInput?.value) || 38) / 100;
   return {
     cx: a.cx,
-    cy: a.forehead.y + dh * (0.5 - hatFrac),
+    cy: a.chin.y - dh * 0.48 + dh * nudge,
     dw,
     dh,
     angle: a.angle,
@@ -249,25 +251,6 @@ function drawMap() {
     ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
     ctx.fill();
   }
-  if (!cutout) {
-    const a = faceAnchor(face);
-    ctx.save();
-    ctx.translate(a.cx, (a.forehead.y + a.chin.y) / 2);
-    ctx.rotate(a.angle);
-    ctx.strokeStyle = "rgba(255,255,255,0.9)";
-    ctx.lineWidth = 3;
-    ctx.strokeRect(-a.faceW / 2, -a.faceH / 2, a.faceW, a.faceH);
-    ctx.restore();
-    return;
-  }
-  const box = maskRect(face);
-  ctx.save();
-  ctx.translate(box.cx, box.cy);
-  ctx.rotate(box.angle);
-  ctx.strokeStyle = "rgba(255,255,255,0.9)";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(-box.dw / 2, -box.dh / 2, box.dw, box.dh);
-  ctx.restore();
 }
 
 function drawMask() {
@@ -336,7 +319,7 @@ function attach() {
   }
   attached = true;
   btnRec.disabled = false;
-  setStatus("Attached — use Size if needed, then Record");
+  setStatus("Attached — Size / Nudge, then Record");
   toast("Mask attached");
 }
 
