@@ -159,12 +159,59 @@ function useBuiltin() {
   setStatus("Built-in mask ready");
 }
 
+function isImageFile(file) {
+  const name = (file.name || "").toLowerCase();
+  const type = (file.type || "").toLowerCase();
+  return type.startsWith("image/") || /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/.test(name);
+}
+
+function loadPhotoMask(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const max = 1024;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.max(2, Math.round(img.width * scale));
+      const h = Math.max(2, Math.round(img.height * scale));
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+      const aspect = w / h;
+      const height = 0.28;
+      const mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(height * aspect, height, 12, 12),
+        new THREE.MeshBasicMaterial({
+          map: tex,
+          transparent: true,
+          side: THREE.DoubleSide,
+        })
+      );
+      mesh.position.z = 0.05;
+      URL.revokeObjectURL(url);
+      resolve(mesh);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("image load failed"));
+    };
+    img.src = url;
+  });
+}
+
 async function loadUserMesh(file) {
   const url = URL.createObjectURL(file);
   const name = file.name.toLowerCase();
   try {
     let object;
-    if (name.endsWith(".obj")) {
+    if (isImageFile(file)) {
+      object = await loadPhotoMask(file);
+    } else if (name.endsWith(".obj")) {
       object = await new OBJLoader().loadAsync(url);
       object.traverse((n) => {
         if (n.isMesh) {
@@ -176,19 +223,20 @@ async function loadUserMesh(file) {
           });
         }
       });
+      fitObjectToFace(object);
     } else {
       const gltf = await new GLTFLoader().loadAsync(url);
       object = gltf.scene;
+      fitObjectToFace(object);
     }
-    fitObjectToFace(object);
     clearMask();
     maskRoot.add(object);
     maskRoot.visible = false;
     setStatus("Mask loaded — look at camera");
-    toast("Mask fitted to face mesh");
+    toast(isImageFile(file) ? "Photo locked to face" : "Mask fitted to face mesh");
   } catch (err) {
     console.error(err);
-    toast("Could not load that mesh");
+    toast("Could not load that file");
     setStatus("Load failed");
   } finally {
     URL.revokeObjectURL(url);
