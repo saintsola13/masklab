@@ -8,8 +8,9 @@ const btnAttach = document.getElementById("btn-attach");
 const btnLock = document.getElementById("btn-lock");
 const btnRec = document.getElementById("btn-rec");
 const btnStop = document.getElementById("btn-stop");
+const btnVfx = document.getElementById("btn-vfx");
 const photoBtn = document.getElementById("photo-btn");
-const photoInput = document.getElementById("file-input") || document.getElementById("file-photo");
+const filePhoto = document.getElementById("file-photo");
 const previewEl = document.getElementById("preview");
 const previewImg = document.getElementById("preview-img");
 const previewLabel = document.getElementById("preview-label");
@@ -22,9 +23,11 @@ const saveVideo = document.getElementById("save-video");
 const btnSavePhotos = document.getElementById("btn-save-photos");
 const btnSaveClose = document.getElementById("btn-save-close");
 const libraryEl = document.getElementById("library");
-
-// Re-attach the file input by correct id
-const filePhoto = document.getElementById("file-photo");
+const vfxPanel = document.getElementById("vfx-panel");
+const vfxPitchEl = document.getElementById("vfx-pitch");
+const vfxPitchVal = document.getElementById("vfx-pitch-val");
+const vfxRobotBtn = document.getElementById("vfx-robot");
+const vfxReverbBtn = document.getElementById("vfx-reverb");
 
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
@@ -45,6 +48,197 @@ let recChunks = [];
 let lastFile = null;
 let lastUrl = null;
 
+// ── VOICE FX STATE ────────────────────────────────────────────────────────────
+let audioCtx = null;
+let micSource = null;
+let fxDest = null;       // MediaStreamDestination — what recorder hears
+let pitchNode = null;    // ScriptProcessor for pitch shift
+let robotOsc = null;     // ring mod oscillator
+let robotGain = null;
+let reverbNode = null;
+let dryGain = null;
+let wetGain = null;
+let vfxOn = false;
+let robotOn = false;
+let reverbOn = false;
+let pitchSemitones = 0;
+
+// Simple pitch shift via playback rate on a buffer — we use a phase vocoder
+// approximation: resample mic through MediaRecorder detour is too complex,
+// so we use a ScriptProcessor that reads mic samples and resamples in small chunks.
+// For clean results we use the Web Audio API pitch shifter via detune on a buffer source.
+// Best practical approach in browser: route mic → MediaStreamSource → pitchShifter chain.
+
+// We'll implement pitch shift using a continuously running buffer trick:
+// mic → ScriptProcessor (collect samples) → resample at different rate → output
+
+const PITCH_BUFFER_SIZE = 4096;
+const SEMITONE = Math.pow(2, 1/12);
+
+function buildAudioGraph() {
+  if (!stream || !stream.getAudioTracks().length) return false;
+
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  micSource = audioCtx.createMediaStreamSource(stream);
+  fxDest = audioCtx.createMediaStreamDestination();
+
+  // ── Dry/Wet mix ──
+  dryGain = audioCtx.createGain();
+  wetGain = audioCtx.createGain();
+  dryGain.gain.value = 0;   // FX chain is the main path
+  wetGain.gain.value = 1;
+
+  // ── Pitch shift (ScriptProcessor resampler) ──
+  pitchNode = audioCtx.createScriptProcessor(PITCH_BUFFER_SIZE, 1, 1);
+  let pitchBuffer = new Float32Array(PITCH_BUFFER_SIZE * 4);
+  let writePos = 0;
+  let readPos = 0;
+
+  pitchNode.onaudioprocess = (e) => {
+    const input = e.inputBuffer.getChannelData(0);
+    const output = e.outputBuffer.getChannelData(0);
+    const rate = Math.pow(SEMITONE, pitchSemitones);
+
+    // Write input into circular buffer
+    for (let i = 0; i < input.length; i++) {
+      pitchBuffer[writePos % pitchBuffer.length] = input[i];
+      writePos++;
+    }
+
+    // Read back at different rate
+    for (let i = 0; i < output.length; i++) {
+      const pos = readPos % pitchBuffer.length;
+      const p0 = Math.floor(pos);
+      const p1 = (p0 + 1) % pitchBuffer.length;
+      const frac = pos - p0;
+      output[i] = pitchBuffer[p0] * (1 - frac) + pitchBuffer[p1] * frac;
+      readPos += rate;
+    }
+    // Keep read/write from drifting too far
+    while (readPos > writePos + PITCH_BUFFER_SIZE) readPos -= PITCH_BUFFER_SIZE;
+    while (writePos > readPos + PITCH_BUFFER_SIZE * 3) readPos += PITCH_BUFFER_SIZE;
+  };
+
+  // ── Robot (ring modulator) ──
+  robotOsc = audioCtx.createOscillator();
+  robotOsc.type = "sawtooth";
+  robotOsc.frequency.value = 80;
+  robotGain = audioCtx.createGain();
+  robotGain.gain.value = 0; // off by default
+
+  const ringMod = audioCtx.createGain();
+  robotOsc.connect(robotGain);
+  // We'll connect robotGain as a gain modulator via a separate path
+
+  // ── Reverb (convolver with synthetic IR) ──
+  reverbNode = audioCtx.createConvolver();
+  reverbNode.buffer = buildImpulseResponse(audioCtx, 2.5, 3.2, false);
+
+  const reverbWet = audioCtx.createGain();
+  const reverbDry = audioCtx.createGain();
+  reverbWet.gain.value = 0; // off by default
+  reverbDry.gain.value = 1;
+
+  // ── Graph: mic → pitch → robot ring mod → reverb mix → dest ──
+  micSource.connect(pitchNode);
+
+  // Robot ring mod: multiply signal by oscillator
+  // Approximate ring mod: pitchNode → robotGain (mod depth controlled) → output
+  // True ring mod needs AudioWorklet; best browser approx: add osc into signal chain
+  pitchNode.connect(reverbDry);
+  pitchNode.connect(reverbNode);
+  robotOsc.connect(pitchNode); // add osc harmonics into the audio path (additive approx)
+
+  reverbDry.connect(fxDest);
+  reverbNode.connect(reverbWet);
+  reverbWet.connect(fxDest);
+
+  robotOsc.start();
+
+  // Store refs for toggle
+  vfxPanel._reverbWet = reverbWet;
+  vfxPanel._reverbDry = reverbDry;
+
+  return true;
+}
+
+function buildImpulseResponse(ctx, duration, decay, reverse) {
+  const rate = ctx.sampleRate;
+  const length = Math.round(rate * duration);
+  const impulse = ctx.createBuffer(2, length, rate);
+  for (let c = 0; c < 2; c++) {
+    const ch = impulse.getChannelData(c);
+    for (let i = 0; i < length; i++) {
+      const n = reverse ? length - i : i;
+      ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - n / length, decay);
+    }
+  }
+  return impulse;
+}
+
+function toggleVfxPanel() {
+  if (!running) { toast("Start camera first"); return; }
+  if (!stream?.getAudioTracks().length) { toast("No mic — voice FX needs mic access"); return; }
+
+  vfxOn = !vfxOn;
+  vfxPanel.hidden = !vfxOn;
+  btnVfx.textContent = vfxOn ? "🎙 FX ON" : "🎙 Voice FX";
+  btnVfx.style.borderColor = vfxOn ? "rgba(255,42,58,0.8)" : "";
+  btnVfx.style.color = vfxOn ? "#ff2a3a" : "";
+
+  if (vfxOn && !audioCtx) {
+    const ok = buildAudioGraph();
+    if (!ok) { toast("No mic for voice FX"); vfxOn = false; vfxPanel.hidden = true; return; }
+    toast("Voice FX ready");
+  }
+}
+
+function toggleRobot() {
+  robotOn = !robotOn;
+  vfxRobotBtn.textContent = robotOn ? "ON" : "OFF";
+  vfxRobotBtn.style.color = robotOn ? "#ff2a3a" : "";
+  vfxRobotBtn.style.borderColor = robotOn ? "rgba(255,42,58,0.7)" : "";
+  if (robotOsc) {
+    // Robot: boost oscillator frequency injection and add distortion feel
+    robotOsc.frequency.value = robotOn ? 60 : 80;
+    robotGain.gain.setTargetAtTime(robotOn ? 0.4 : 0, audioCtx.currentTime, 0.05);
+    // Detune pitch down slightly for robot voice
+    if (robotOn && pitchSemitones === 0) {
+      pitchSemitones = -3;
+      vfxPitchEl.value = -3;
+      vfxPitchVal.textContent = "-3";
+    }
+  }
+  toast(robotOn ? "Robot on" : "Robot off");
+}
+
+function toggleReverb() {
+  reverbOn = !reverbOn;
+  vfxReverbBtn.textContent = reverbOn ? "ON" : "OFF";
+  vfxReverbBtn.style.color = reverbOn ? "#ff2a3a" : "";
+  vfxReverbBtn.style.borderColor = reverbOn ? "rgba(255,42,58,0.7)" : "";
+  if (vfxPanel._reverbWet) {
+    vfxPanel._reverbWet.gain.setTargetAtTime(reverbOn ? 0.65 : 0, audioCtx.currentTime, 0.05);
+    vfxPanel._reverbDry.gain.setTargetAtTime(reverbOn ? 0.45 : 1, audioCtx.currentTime, 0.05);
+  }
+  toast(reverbOn ? "Reverb on" : "Reverb off");
+}
+
+vfxPitchEl.addEventListener("input", () => {
+  pitchSemitones = Number(vfxPitchEl.value);
+  vfxPitchVal.textContent = pitchSemitones > 0 ? `+${pitchSemitones}` : String(pitchSemitones);
+});
+vfxRobotBtn.addEventListener("click", toggleRobot);
+vfxReverbBtn.addEventListener("click", toggleReverb);
+btnVfx.addEventListener("click", toggleVfxPanel);
+
+// ── Pick audio source for recorder: FX chain if active, raw mic otherwise ──
+function getAudioTracks() {
+  if (vfxOn && fxDest) return fxDest.stream.getAudioTracks();
+  if (stream) return stream.getAudioTracks();
+  return [];
+}
+
 // ── Blendshape helper ─────────────────────────────────────────────────────────
 function getBlend(name) {
   if (!blendshapes) return 0;
@@ -52,96 +246,69 @@ function getBlend(name) {
   return cat ? cat.score : 0;
 }
 
-// ── Warp cutout image in its OWN pixel space ──────────────────────────────────
-// This runs BEFORE any canvas rotation so slices are always axis-aligned.
-// We get landmark Y positions as UV fractions (0-1) in the mask's screen rect,
-// then map those into cutout pixel rows and do vertical band scaling there.
-
+// ── Warp cutout in its own pixel space (no rotation glitch) ──────────────────
 function warpCutoutImage(box) {
   const W = cutout.width;
   const H = cutout.height;
 
-  const blinkL = Math.min(1, getBlend("eyeBlinkLeft")  * 1.6);
-  const blinkR = Math.min(1, getBlend("eyeBlinkRight") * 1.6);
-  const blink  = Math.max(blinkL, blinkR);
-  const jaw    = Math.min(1, getBlend("jawOpen") * 2.0);
+  const blink = Math.min(1, Math.max(getBlend("eyeBlinkLeft"), getBlend("eyeBlinkRight")) * 1.6);
+  const jaw   = Math.min(1, getBlend("jawOpen") * 2.0);
 
-  if (blink < 0.03 && jaw < 0.03) return cutout; // nothing to do
+  if (blink < 0.03 && jaw < 0.03) return cutout;
 
-  // Get face landmark Y values and convert to UV fraction within mask rect
   const maskTop = box.cy - box.dh / 2;
   const maskH   = box.dh;
 
   function lmUV(idx) {
-    if (!face || !face[idx]) return null;
+    if (!face?.[idx]) return null;
     const { dh, oy } = coverRect();
-    const screenY = oy + face[idx].y * dh;
-    return (screenY - maskTop) / maskH; // 0=top of mask, 1=bottom
+    return (oy + face[idx].y * dh - maskTop) / maskH;
   }
 
-  // Eye band: landmarks 159/145 (right eye top/bot), 386/374 (left eye top/bot)
   const eyeUVs = [lmUV(159), lmUV(145), lmUV(386), lmUV(374)].filter(v => v !== null);
   const eyeTopUV = eyeUVs.length ? Math.max(0.05, Math.min(...eyeUVs) - 0.03) : 0.22;
   const eyeBotUV = eyeUVs.length ? Math.min(0.95, Math.max(...eyeUVs) + 0.03) : 0.36;
 
-  // Mouth band: landmarks 13/14 (inner lip top/bot)
-  const mTopUV_raw = lmUV(13);
-  const mBotUV_raw = lmUV(14);
-  const mTopUV = mTopUV_raw !== null ? Math.max(0.05, mTopUV_raw - 0.04) : 0.60;
-  const mBotUV = mBotUV_raw !== null ? Math.min(0.95, mBotUV_raw + 0.06) : 0.74;
+  const mTopUV = lmUV(13) !== null ? Math.max(0.05, lmUV(13) - 0.04) : 0.60;
+  const mBotUV = lmUV(14) !== null ? Math.min(0.95, lmUV(14) + 0.06) : 0.74;
 
-  // Convert UVs to cutout pixel rows
-  const eyeTopPx = eyeTopUV * H;
-  const eyeBotPx = eyeBotUV * H;
-  const mTopPx   = mTopUV   * H;
-  const mBotPx   = mBotUV   * H;
-
+  const eyeTopPx = eyeTopUV * H, eyeBotPx = eyeBotUV * H;
+  const mTopPx   = mTopUV   * H, mBotPx   = mBotUV   * H;
   const eyeBandH = Math.max(1, eyeBotPx - eyeTopPx);
   const mBandH   = Math.max(1, mBotPx   - mTopPx);
 
-  const eyeSquish = 1 - blink * 0.90;          // blink=1 → 10% height remaining
-  const mStretch  = 1 + jaw   * 0.55;           // jaw=1 → 55% taller mouth
+  const eyeSquish = 1 - blink * 0.90;
+  const mStretch  = 1 + jaw   * 0.55;
 
-  // Build output canvas: height shifts because eye squishes (negative) and mouth expands (positive)
-  const eyeDelta = eyeBandH * eyeSquish - eyeBandH;   // negative
-  const mDelta   = mBandH   * mStretch  - mBandH;     // positive
+  const eyeDelta = eyeBandH * eyeSquish - eyeBandH;
+  const mDelta   = mBandH   * mStretch  - mBandH;
   const newH     = Math.max(1, Math.round(H + eyeDelta + mDelta));
 
   const out = document.createElement("canvas");
-  out.width = W;
-  out.height = newH;
+  out.width = W; out.height = newH;
   const oc = out.getContext("2d");
 
-  // 5 bands: [top of image → eye top] [eye band] [eye bot → mouth top] [mouth band] [mouth bot → bottom]
   let destY = 0;
-
   function blitBand(srcY, srcH, dstH) {
     if (srcH <= 0 || dstH <= 0) return;
     oc.drawImage(cutout, 0, srcY, W, srcH, 0, destY, W, dstH);
     destY += dstH;
   }
 
-  blitBand(0,         eyeTopPx,                 eyeTopPx);                        // top section — unchanged
-  blitBand(eyeTopPx,  eyeBandH,                 eyeBandH * eyeSquish);             // eye band — squished
-  blitBand(eyeBotPx,  mTopPx - eyeBotPx,        mTopPx - eyeBotPx);               // mid section — unchanged
-  blitBand(mTopPx,    mBandH,                   mBandH  * mStretch);               // mouth band — stretched
-  blitBand(mBotPx,    H - mBotPx,               H - mBotPx);                       // bottom section — unchanged
+  blitBand(0,        eyeTopPx,             eyeTopPx);
+  blitBand(eyeTopPx, eyeBandH,             eyeBandH * eyeSquish);
+  blitBand(eyeBotPx, mTopPx - eyeBotPx,   mTopPx - eyeBotPx);
+  blitBand(mTopPx,   mBandH,              mBandH  * mStretch);
+  blitBand(mBotPx,   H - mBotPx,          H - mBotPx);
 
   return out;
 }
 
-// ── Draw mask (animation only fires when locked) ──────────────────────────────
 function drawMaskAnimated() {
   if (!attached || !cutout || !face) return;
-
   const box = maskRect(face);
-
-  // Warp happens in cutout pixel space — completely independent of canvas rotation
   const src = locked ? warpCutoutImage(box) : cutout;
-
-  const mX = box.cx - box.dw / 2;
-  const mY = box.cy - box.dh / 2;
-
+  const mX = box.cx - box.dw / 2, mY = box.cy - box.dh / 2;
   ctx.save();
   ctx.translate(box.cx, box.cy);
   ctx.rotate(box.angle);
@@ -159,13 +326,12 @@ function toast(t, ms = 1800) {
 }
 
 function loadStore() {
-  try { const raw = localStorage.getItem(STORE); return raw ? JSON.parse(raw) : []; }
-  catch { return []; }
+  try { return JSON.parse(localStorage.getItem(STORE) || "[]"); } catch { return []; }
 }
 function writeStore(items) {
   const next = items.slice(0, 8);
   try { localStorage.setItem(STORE, JSON.stringify(next)); return true; }
-  catch { if (next.length > 1) return writeStore(next.slice(0, next.length - 1)); return false; }
+  catch { return next.length > 1 ? writeStore(next.slice(0, -1)) : false; }
 }
 function persistPhoto() {
   if (!photoSource) return;
@@ -215,10 +381,7 @@ function sizeCanvases() {
 window.addEventListener("resize", sizeCanvases);
 sizeCanvases();
 
-function unlockPhotos() {
-  photoBtn.classList.remove("locked");
-  filePhoto.disabled = false;
-}
+function unlockPhotos() { photoBtn.classList.remove("locked"); filePhoto.disabled = false; }
 
 function coverRect() {
   const cw = view.width, ch = view.height;
@@ -279,8 +442,8 @@ function cropAlpha(src) {
 }
 function rebuildCutout() {
   if (!photoSource) return;
-  cutout=floodCutout(photoSource,Number(cutoutInput.value));
-  previewImg.src=cutout.toDataURL("image/png");
+  cutout = floodCutout(photoSource, Number(cutoutInput.value));
+  previewImg.src = cutout.toDataURL("image/png");
 }
 function drawSource(imgLike) {
   const width=imgLike.width||2, height=imgLike.height||2;
@@ -352,39 +515,38 @@ async function initTracker() {
 
 async function startCamera() {
   if (running) return;
-  // Try with mic first, silently fall back to video-only — no toast
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode:"user", width:{ideal:1280}, height:{ideal:720} },
       audio: { echoCancellation:true, noiseSuppression:true },
     });
   } catch(_) {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"user" }, audio:false });
-    } catch(err2) {
-      setStatus("Allow camera access");
-      return;
-    }
+    try { stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"user" }, audio:false }); }
+    catch(err2) { setStatus("Allow camera access"); return; }
   }
-  video.srcObject=stream; await video.play();
+  video.srcObject = stream;
+  await video.play();
   if (!landmarker) await initTracker();
-  running=true; btnCam.textContent="Camera on"; unlockPhotos();
+  running = true;
+  btnCam.textContent = "Camera on";
+  unlockPhotos();
+  btnVfx.disabled = false;
   setStatus("Face mapping — look at camera, then pick a photo");
   toast("Camera on");
 }
 
 function attach() {
   if (!cutout) { toast("Pick a photo first"); return; }
-  if (!face)   { toast("Look at the camera so the face map locks"); return; }
+  if (!face)   { toast("Look at the camera first"); return; }
   attached=true; locked=false; btnLock.disabled=false; btnRec.disabled=true;
-  setStatus("Slide / Size / Nudge, then Lock"); toast("Attached — line it up, then Lock");
+  setStatus("Line it up, then Lock"); toast("Attached — adjust then Lock");
 }
 function lockFit() {
   if (!attached) { toast("Attach first"); return; }
   locked=true; btnRec.disabled=false;
   btnLock.textContent="Locked ✦";
-  setStatus("Locked — mouth + eyes animating. Record when ready");
-  toast("Fit locked — animation on");
+  setStatus("Locked — Record when ready");
+  toast("Fit locked");
 }
 
 function loop() {
@@ -412,24 +574,26 @@ function pickMime() {
 function pickRecorder() {
   const mime=pickMime();
   const canvasStream=recCanvas.captureStream(30);
-  const tracks=[...canvasStream.getVideoTracks()];
-  if (stream) tracks.push(...stream.getAudioTracks());
+  const audioTracks = getAudioTracks();
+  const tracks=[...canvasStream.getVideoTracks(), ...audioTracks];
   const mixed=new MediaStream(tracks);
   return mime?new MediaRecorder(mixed,{mimeType:mime}):new MediaRecorder(mixed);
 }
 function startRec() {
   if (!attached||!running||!locked) { toast("Lock the fit first"); return; }
+  // Resume AudioContext if suspended (mobile autoplay policy)
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
   recChunks=[]; compositeTo(recCtx); recorder=pickRecorder();
   recorder.ondataavailable=e=>{ if(e.data&&e.data.size) recChunks.push(e.data); };
   recorder.start(200); btnRec.hidden=true; btnStop.hidden=false;
-  btnStop.textContent="Stop & save"; setStatus("Recording…");
+  btnStop.textContent="Stop & save";
+  setStatus(vfxOn ? "Recording w/ Voice FX…" : "Recording…");
 }
 function makeFile() {
   const raw=recorder?.mimeType||recChunks[0]?.type||"video/mp4";
   const isMp4=raw.includes("mp4");
   const type=isMp4?"video/mp4":"video/webm"; const ext=isMp4?"mp4":"webm";
-  const blob=new Blob(recChunks,{type});
-  return new File([blob],`masklab-${Date.now()}.${ext}`,{type});
+  return new File([new Blob(recChunks,{type})],`masklab-${Date.now()}.${ext}`,{type});
 }
 function showSaveSheet(file) {
   if (lastUrl) URL.revokeObjectURL(lastUrl);
@@ -439,18 +603,14 @@ function showSaveSheet(file) {
 async function shareToPhotos(file) {
   if (!file) return false;
   try {
-    if (navigator.canShare&&navigator.canShare({files:[file]})) {
-      await navigator.share({files:[file],title:"MASKLAB"}); toast("Pick Save Video"); return true;
-    }
-    if (navigator.share) {
-      await navigator.share({files:[file],title:"MASKLAB"}); toast("Pick Save Video"); return true;
-    }
-  } catch(err) { if(err&&err.name==="AbortError") return true; }
+    if (navigator.canShare?.({files:[file]})) { await navigator.share({files:[file],title:"MASKLAB"}); toast("Pick Save Video"); return true; }
+    if (navigator.share) { await navigator.share({files:[file],title:"MASKLAB"}); toast("Pick Save Video"); return true; }
+  } catch(err) { if(err?.name==="AbortError") return true; }
   return false;
 }
 async function stopRec() {
   if (!recorder||recorder.state==="inactive") return;
-  const done=new Promise(resolve=>{ recorder.addEventListener("stop",resolve,{once:true}); });
+  const done=new Promise(r=>recorder.addEventListener("stop",r,{once:true}));
   recorder.stop(); await done;
   btnRec.hidden=false; btnStop.hidden=true;
   const file=makeFile(); showSaveSheet(file); await shareToPhotos(file);
@@ -458,25 +618,25 @@ async function stopRec() {
 
 btnSavePhotos.addEventListener("click",async()=>{ if(!lastFile) return; const ok=await shareToPhotos(lastFile); if(!ok) toast("Hold the video → Save Video"); });
 btnSaveClose.addEventListener("click",()=>{ saveSheet.hidden=true; setStatus("Locked — Record when ready"); });
-btnCam.addEventListener("click",startCamera);
-btnAttach.addEventListener("click",attach);
-btnLock.addEventListener("click",lockFit);
-btnRec.addEventListener("click",startRec);
-btnStop.addEventListener("click",stopRec);
+btnCam.addEventListener("click", startCamera);
+btnAttach.addEventListener("click", attach);
+btnLock.addEventListener("click", lockFit);
+btnRec.addEventListener("click", startRec);
+btnStop.addEventListener("click", stopRec);
 
 filePhoto.addEventListener("change", async () => {
-  const file = filePhoto.files?.[0]; if (!file) return;
+  const file=filePhoto.files?.[0]; if(!file) return;
   try {
     setStatus("Cutting photo…");
     const decoded=await decodePhoto(file); photoSource=drawSource(decoded);
-    if (decoded.close) decoded.close();
+    if(decoded.close) decoded.close();
     rebuildCutout(); persistPhoto();
     previewEl.hidden=false; previewLabel.textContent="Cutout ready — Attach";
     btnAttach.disabled=false; attached=false; locked=false;
     btnLock.disabled=true; btnLock.textContent="4. Lock"; btnRec.disabled=true;
     setStatus(face?"Tap Attach":"Look at camera, then Attach");
     toast("Saved — tap Attach");
-  } catch(err) { console.error(err); toast("Could not read that photo — try a screenshot"); }
+  } catch(err) { console.error(err); toast("Could not read photo — try a screenshot"); }
 });
 
 cutoutInput.addEventListener("input", rebuildCutout);
