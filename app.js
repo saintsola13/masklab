@@ -13,11 +13,10 @@ const previewEl = document.getElementById("preview");
 const previewImg = document.getElementById("preview-img");
 const previewLabel = document.getElementById("preview-label");
 const cutoutInput = document.getElementById("cutout");
+const sizeInput = document.getElementById("size");
 
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
-
-const OVAL = [10, 109, 67, 103, 54, 21, 162, 127, 234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454, 356, 389, 251, 284, 332, 297, 338];
 
 let landmarker = null;
 let stream = null;
@@ -188,15 +187,9 @@ async function decodePhoto(file) {
   }
 }
 
-function faceFit(landmarks) {
-  const pts = OVAL.map((i) => toCanvas(landmarks[i]));
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of pts) {
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
-  }
+function faceAnchor(landmarks) {
+  const forehead = toCanvas(landmarks[10]);
+  const chin = toCanvas(landmarks[152]);
   const a = toCanvas(landmarks[234]);
   const b = toCanvas(landmarks[454]);
   const left = a.x < b.x ? a : b;
@@ -204,14 +197,37 @@ function faceFit(landmarks) {
   let angle = Math.atan2(right.y - left.y, right.x - left.x);
   if (angle > Math.PI / 2) angle -= Math.PI;
   if (angle < -Math.PI / 2) angle += Math.PI;
-  const width = (maxX - minX) * 1.18;
-  const height = (maxY - minY) * 1.16;
+  const userScale = (Number(sizeInput?.value) || 118) / 100;
   return {
-    cx: (minX + maxX) / 2,
-    cy: (minY + maxY) / 2,
-    width,
-    height,
+    forehead,
+    chin,
+    left,
+    right,
+    cx: (left.x + right.x) * 0.5,
+    faceW: Math.hypot(right.x - left.x, right.y - left.y) * 1.62 * userScale,
+    faceH: Math.hypot(chin.x - forehead.x, chin.y - forehead.y) * 1.12 * userScale,
     angle,
+  };
+}
+
+function maskRect(landmarks) {
+  const a = faceAnchor(landmarks);
+  const aspect = cutout.width / Math.max(cutout.height, 1);
+  // Lower 58% of the sticker is treated as the face; hat rides above the forehead.
+  const faceFrac = 0.58;
+  let dh = a.faceH / faceFrac;
+  let dw = dh * aspect;
+  if (dw < a.faceW) {
+    dw = a.faceW;
+    dh = dw / aspect;
+  }
+  const hatFrac = 1 - faceFrac;
+  return {
+    cx: a.cx,
+    cy: a.forehead.y + dh * (0.5 - hatFrac),
+    dw,
+    dh,
+    angle: a.angle,
   };
 }
 
@@ -233,30 +249,34 @@ function drawMap() {
     ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
     ctx.fill();
   }
-  const box = faceFit(face);
+  if (!cutout) {
+    const a = faceAnchor(face);
+    ctx.save();
+    ctx.translate(a.cx, (a.forehead.y + a.chin.y) / 2);
+    ctx.rotate(a.angle);
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(-a.faceW / 2, -a.faceH / 2, a.faceW, a.faceH);
+    ctx.restore();
+    return;
+  }
+  const box = maskRect(face);
   ctx.save();
   ctx.translate(box.cx, box.cy);
   ctx.rotate(box.angle);
   ctx.strokeStyle = "rgba(255,255,255,0.9)";
   ctx.lineWidth = 3;
-  ctx.strokeRect(-box.width / 2, -box.height / 2, box.width, box.height);
+  ctx.strokeRect(-box.dw / 2, -box.dh / 2, box.dw, box.dh);
   ctx.restore();
 }
 
 function drawMask() {
   if (!attached || !cutout || !face) return;
-  const box = faceFit(face);
-  const aspect = cutout.width / Math.max(cutout.height, 1);
-  let dw = box.width;
-  let dh = dw / aspect;
-  if (dh < box.height) {
-    dh = box.height;
-    dw = dh * aspect;
-  }
+  const box = maskRect(face);
   ctx.save();
   ctx.translate(box.cx, box.cy);
   ctx.rotate(box.angle);
-  ctx.drawImage(cutout, -dw / 2, -dh / 2, dw, dh);
+  ctx.drawImage(cutout, -box.dw / 2, -box.dh / 2, box.dw, box.dh);
   ctx.restore();
 }
 
@@ -316,7 +336,7 @@ function attach() {
   }
   attached = true;
   btnRec.disabled = false;
-  setStatus("Attached — move then Record");
+  setStatus("Attached — use Size if needed, then Record");
   toast("Mask attached");
 }
 
