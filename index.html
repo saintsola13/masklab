@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
   <title>M4SK</title>
-  <link rel="stylesheet" href="styles.css?v=6" />
+  <link rel="stylesheet" href="styles.css?v=7" />
 </head>
 <body>
   <div id="stage">
@@ -57,6 +57,9 @@
       </label>
     </div>
 
+    <!-- VFX FLOAT BUTTON - lives outside dock, doesn't affect step flow -->
+    <button id="btn-vfx" type="button" disabled>🎙 FX</button>
+
     <div id="save-sheet" hidden>
       <video id="save-video" playsinline controls></video>
       <p id="save-hint">Tap Save to Photos, or hold the video and choose Save Video</p>
@@ -71,12 +74,11 @@
       </div>
       <button id="btn-attach" type="button" disabled>3. Attach</button>
       <button id="btn-lock" type="button" disabled>4. Lock</button>
-      <button id="btn-vfx" type="button" disabled>🎙 Voice FX</button>
-      <button id="btn-rec" type="button" disabled>6. Record</button>
+      <button id="btn-rec" type="button" disabled>5. Record</button>
       <button id="btn-stop" type="button" hidden>Stop & save</button>
     </div>
     <div id="toast" hidden></div>
   </div>
-  <script type="module" src="app.js?v=6"></script>
+  <script type="module" src="app.js?v=7"></script>
 </body>
 </html>
