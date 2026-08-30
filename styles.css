@@ -22,7 +22,7 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   z-index: 2;
   pointer-events: none;
   background: rgba(0,0,0,0.35);
-  padding: 18vh 12vw;
+  padding: 16vh 10vw;
 }
 #picked.on { display: block; }
 #hud {
@@ -66,12 +66,7 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   height: 56px;
   object-fit: contain;
   border-radius: 8px;
-  background:
-    linear-gradient(45deg, #333 25%, transparent 25%) 0 0 / 10px 10px,
-    linear-gradient(45deg, transparent 75%, #333 75%) 0 0 / 10px 10px,
-    linear-gradient(45deg, #333 25%, transparent 25%) 5px 5px / 10px 10px,
-    linear-gradient(45deg, transparent 75%, #333 75%) 5px 5px / 10px 10px,
-    #111;
+  background: #222;
   display: block;
 }
 #preview-meta {
@@ -91,10 +86,7 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   font-size: 11px;
   color: rgba(255,255,255,0.7);
 }
-#cutout {
-  width: 110px;
-  accent-color: #fff;
-}
+#cutout { width: 110px; accent-color: #fff; }
 #dock {
   position: absolute;
   left: 12px;
@@ -106,7 +98,7 @@ html, body { height: 100%; background: #050505; color: #fff; font-family: ui-san
   justify-content: center;
   z-index: 4;
 }
-button {
+button, .file-btn {
   appearance: none;
   border: 1px solid rgba(255,255,255,0.28);
   background: rgba(12,12,12,0.72);
@@ -118,15 +110,18 @@ button {
   border-radius: 999px;
   cursor: pointer;
   backdrop-filter: blur(10px);
+  position: relative;
+  overflow: hidden;
 }
 button.primary { background: #fff; color: #111; border-color: #fff; }
 button[disabled] { opacity: 0.4; cursor: not-allowed; }
-#file-photo, #file-3d {
+.file-btn input[type="file"] {
   position: absolute;
-  left: -9999px;
-  width: 1px;
-  height: 1px;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   opacity: 0;
+  font-size: 20px;
 }
 #toast {
   position: absolute;
