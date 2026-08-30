@@ -115,44 +115,56 @@ function buildAudioGraph() {
     if (lag < PITCH_BUFFER_SIZE)     readPos -= PITCH_BUFFER_SIZE;
   };
 
-  // ── Robot: waveshaper distortion (no oscillator injection — that caused the buzz) ──
+  // ── Ring modulator (TRUE robot effect) ──
+  // mic signal multiplied by oscillator — NOT added, MULTIPLIED.
+  // ringModGain.gain is driven by the oscillator so it oscillates between -1 and +1
+  // This chops the signal at the osc frequency = classic robot voice.
+  // The oscillator connects to the GAIN PARAM only — never into the signal path.
+  // Zero feedback risk.
+  robotOsc = audioCtx.createOscillator();
+  robotOsc.type = "sine";
+  robotOsc.frequency.value = 80; // 80Hz ring = robotic, tweak in toggleRobot
+
+  const oscGain = audioCtx.createGain();
+  oscGain.gain.value = 1.0; // full modulation depth
+
+  // ringModGain starts at 0 gain (robot off) — driven by oscGain when on
   robotGain = audioCtx.createGain();
-  robotGain.gain.value = 1;
-  const robotShaper = audioCtx.createWaveShaper();
-  const curve = new Float32Array(256);
-  for (let i = 0; i < 256; i++) {
-    const x = (i * 2) / 256 - 1;
-    curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x)); // soft clip
-  }
-  robotShaper.curve = curve;
-  robotShaper.oversample = "4x";
+  robotGain.gain.value = 1; // when robot off, pass signal through at unity
+
+  robotOsc.connect(oscGain);
+  // oscGain drives robotGain.gain AudioParam — this is the ring mod
+  // We'll connect/disconnect oscGain → robotGain.gain on toggle
+
+  robotOsc.start();
+  vfxPanel._oscGain = oscGain;
 
   // ── Reverb (convolver + synthetic impulse response) ──
   reverbNode = audioCtx.createConvolver();
   reverbNode.buffer = buildImpulseResponse(audioCtx, 2.5, 3.2, false);
   const reverbWet = audioCtx.createGain();
   const reverbDry = audioCtx.createGain();
-  reverbWet.gain.value = 0; // off until toggled
+  reverbWet.gain.value = 0;
   reverbDry.gain.value = 1;
 
-  // ── Graph (NO connection to audioCtx.destination — recorder only) ──
+  // ── Graph (nothing touches audioCtx.destination) ──
   //
-  //  mic → pitchNode → robotShaper → reverbDry → fxDest
-  //                               ↘ reverbNode → reverbWet → fxDest
+  //  mic → pitchNode → robotGain → reverbDry → fxDest
+  //                             ↘ reverbNode → reverbWet → fxDest
+  //
+  //  oscGain → robotGain.gain  (modulates gain param, not signal — ring mod)
   //
   micSource.connect(pitchNode);
-  pitchNode.connect(robotShaper);
-  robotShaper.connect(reverbDry);
-  robotShaper.connect(reverbNode);
+  pitchNode.connect(robotGain);
+  robotGain.connect(reverbDry);
+  robotGain.connect(reverbNode);
   reverbDry.connect(fxDest);
   reverbNode.connect(reverbWet);
   reverbWet.connect(fxDest);
-  // ← audioCtx.destination intentionally never connected
+  // ← audioCtx.destination never connected
 
-  // Store reverb gain refs for toggles
   vfxPanel._reverbWet = reverbWet;
   vfxPanel._reverbDry = reverbDry;
-  vfxPanel._robotShaper = robotShaper;
 
   return true;
 }
@@ -192,26 +204,25 @@ function toggleRobot() {
   vfxRobotBtn.textContent = robotOn ? "ON" : "OFF";
   vfxRobotBtn.style.color = robotOn ? "#ff2a3a" : "";
   vfxRobotBtn.style.borderColor = robotOn ? "rgba(255,42,58,0.7)" : "";
-  if (vfxPanel._robotShaper) {
-    // Robot = heavy waveshaper distortion curve. Swap between a hard clip (robot) and soft pass-through
-    const curve = new Float32Array(256);
-    for (let i = 0; i < 256; i++) {
-      const x = (i * 2) / 256 - 1;
-      if (robotOn) {
-        // Aggressive quantize + hard clip = robot buzz without oscillator injection
-        const q = Math.round(x * 8) / 8;
-        curve[i] = Math.max(-1, Math.min(1, q * 1.8));
-      } else {
-        // Pass-through (linear)
-        curve[i] = x;
+
+  if (robotOsc && vfxPanel._oscGain && robotGain) {
+    if (robotOn) {
+      // Ring mod ON:
+      // Set robotGain.gain to 0 — oscGain will drive it between -1 and +1
+      robotGain.gain.setValueAtTime(0, audioCtx.currentTime);
+      // Connect oscillator to gain AudioParam (ring modulation)
+      vfxPanel._oscGain.connect(robotGain.gain);
+      robotOsc.frequency.value = 80;
+      // Auto-darken pitch for robot feel
+      if (pitchSemitones === 0) {
+        pitchSemitones = -4;
+        vfxPitchEl.value = -4;
+        vfxPitchVal.textContent = "-4";
       }
-    }
-    vfxPanel._robotShaper.curve = curve;
-    // Auto-nudge pitch darker when robot on
-    if (robotOn && pitchSemitones === 0) {
-      pitchSemitones = -4;
-      vfxPitchEl.value = -4;
-      vfxPitchVal.textContent = "-4";
+    } else {
+      // Ring mod OFF: disconnect osc from gain param, restore unity gain
+      try { vfxPanel._oscGain.disconnect(robotGain.gain); } catch(_) {}
+      robotGain.gain.setValueAtTime(1, audioCtx.currentTime);
     }
   }
   toast(robotOn ? "Robot on" : "Robot off");
