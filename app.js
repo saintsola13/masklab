@@ -9,7 +9,7 @@ const btnLock = document.getElementById("btn-lock");
 const btnRec = document.getElementById("btn-rec");
 const btnStop = document.getElementById("btn-stop");
 const photoBtn = document.getElementById("photo-btn");
-const photoInput = document.getElementById("file-photo");
+const photoInput = document.getElementById("file-input") || document.getElementById("file-photo");
 const previewEl = document.getElementById("preview");
 const previewImg = document.getElementById("preview-img");
 const previewLabel = document.getElementById("preview-label");
@@ -22,6 +22,9 @@ const saveVideo = document.getElementById("save-video");
 const btnSavePhotos = document.getElementById("btn-save-photos");
 const btnSaveClose = document.getElementById("btn-save-close");
 const libraryEl = document.getElementById("library");
+
+// Re-attach the file input by correct id
+const filePhoto = document.getElementById("file-photo");
 
 const ctx = view.getContext("2d");
 const recCtx = recCanvas.getContext("2d");
@@ -49,125 +52,93 @@ function getBlend(name) {
   return cat ? cat.score : 0;
 }
 
-// ── Animated mask draw ────────────────────────────────────────────────────────
-// Strategy: draw the full mask onto an offscreen canvas at natural size,
-// then warp it onto screen using drawImage with per-row slice scaling.
-// Eyes: compress rows in eye band vertically (blink)
-// Mouth: expand rows in mouth band vertically (jaw open)
-// No clipping, no region splits — just slice-based vertical warp.
+// ── Warp cutout image in its OWN pixel space ──────────────────────────────────
+// This runs BEFORE any canvas rotation so slices are always axis-aligned.
+// We get landmark Y positions as UV fractions (0-1) in the mask's screen rect,
+// then map those into cutout pixel rows and do vertical band scaling there.
 
-// Landmark indices
-const L_EYE_TOP = 386, L_EYE_BOT = 374;  // left eye vertical span
-const R_EYE_TOP = 159, R_EYE_BOT = 145;  // right eye vertical span
-const L_EYE_CX  = 468;                    // left eye center (with iris)
-const R_EYE_CX  = 473;                    // right eye center (with iris)
-const MOUTH_TOP = 13,  MOUTH_BOT = 14;   // inner lips top/bottom
-
-function lmY(idx) {
-  if (!face || !face[idx]) return null;
-  const { dh, oy } = coverRect();
-  return oy + face[idx].y * dh;
-}
-function lmX(idx) {
-  if (!face || !face[idx]) return null;
-  const { dw, ox } = coverRect();
-  return ox + (1 - face[idx].x) * dw;
-}
-
-// Build a warped version of the cutout image using horizontal slice rendering.
-// Each "band" between control points can be stretched or squished.
-function buildWarpedMask(box) {
+function warpCutoutImage(box) {
   const W = cutout.width;
   const H = cutout.height;
 
-  // Map screen Y positions of key landmarks into cutout UV space
+  const blinkL = Math.min(1, getBlend("eyeBlinkLeft")  * 1.6);
+  const blinkR = Math.min(1, getBlend("eyeBlinkRight") * 1.6);
+  const blink  = Math.max(blinkL, blinkR);
+  const jaw    = Math.min(1, getBlend("jawOpen") * 2.0);
+
+  if (blink < 0.03 && jaw < 0.03) return cutout; // nothing to do
+
+  // Get face landmark Y values and convert to UV fraction within mask rect
   const maskTop = box.cy - box.dh / 2;
-  const maskBot = box.cy + box.dh / 2;
   const maskH   = box.dh;
 
-  function screenToU(screenY) {
-    return (screenY - maskTop) / maskH; // 0..1 in mask space
+  function lmUV(idx) {
+    if (!face || !face[idx]) return null;
+    const { dh, oy } = coverRect();
+    const screenY = oy + face[idx].y * dh;
+    return (screenY - maskTop) / maskH; // 0=top of mask, 1=bottom
   }
 
-  // Get screen Y for landmarks
-  const rEyeTopY = lmY(R_EYE_TOP);
-  const rEyeBotY = lmY(R_EYE_BOT);
-  const lEyeTopY = lmY(L_EYE_TOP);
-  const lEyeBotY = lmY(L_EYE_BOT);
-  const mouthTopY = lmY(MOUTH_TOP);
-  const mouthBotY = lmY(MOUTH_BOT);
+  // Eye band: landmarks 159/145 (right eye top/bot), 386/374 (left eye top/bot)
+  const eyeUVs = [lmUV(159), lmUV(145), lmUV(386), lmUV(374)].filter(v => v !== null);
+  const eyeTopUV = eyeUVs.length ? Math.max(0.05, Math.min(...eyeUVs) - 0.03) : 0.22;
+  const eyeBotUV = eyeUVs.length ? Math.min(0.95, Math.max(...eyeUVs) + 0.03) : 0.36;
 
-  if (!rEyeTopY || !lEyeTopY || !mouthTopY) return cutout;
+  // Mouth band: landmarks 13/14 (inner lip top/bot)
+  const mTopUV_raw = lmUV(13);
+  const mBotUV_raw = lmUV(14);
+  const mTopUV = mTopUV_raw !== null ? Math.max(0.05, mTopUV_raw - 0.04) : 0.60;
+  const mBotUV = mBotUV_raw !== null ? Math.min(0.95, mBotUV_raw + 0.06) : 0.74;
 
-  // Use the higher (lower Y value) eye top and lower eye bottom across both eyes
-  const eyeTopY = Math.min(rEyeTopY, lEyeTopY) - (rEyeBotY - rEyeTopY) * 0.4;
-  const eyeBotY = Math.max(rEyeBotY, lEyeBotY) + (rEyeBotY - rEyeTopY) * 0.4;
-  const mTopY   = mouthTopY - (mouthBotY - mouthTopY) * 0.5;
-  const mBotY   = mouthBotY + (mouthBotY - mouthTopY) * 0.8;
+  // Convert UVs to cutout pixel rows
+  const eyeTopPx = eyeTopUV * H;
+  const eyeBotPx = eyeBotUV * H;
+  const mTopPx   = mTopUV   * H;
+  const mBotPx   = mBotUV   * H;
 
-  const blinkL = Math.min(1, getBlend("eyeBlinkLeft")  * 1.5);
-  const blinkR = Math.min(1, getBlend("eyeBlinkRight") * 1.5);
-  const blink  = Math.max(blinkL, blinkR); // drive both eyes together for cleanliness
-  const jaw    = Math.min(1, getBlend("jawOpen") * 1.8);
+  const eyeBandH = Math.max(1, eyeBotPx - eyeTopPx);
+  const mBandH   = Math.max(1, mBotPx   - mTopPx);
 
-  // If nothing is happening, skip warp
-  if (blink < 0.04 && jaw < 0.04) return cutout;
+  const eyeSquish = 1 - blink * 0.90;          // blink=1 → 10% height remaining
+  const mStretch  = 1 + jaw   * 0.55;           // jaw=1 → 55% taller mouth
 
-  // Build warped offscreen canvas same size as cutout
+  // Build output canvas: height shifts because eye squishes (negative) and mouth expands (positive)
+  const eyeDelta = eyeBandH * eyeSquish - eyeBandH;   // negative
+  const mDelta   = mBandH   * mStretch  - mBandH;     // positive
+  const newH     = Math.max(1, Math.round(H + eyeDelta + mDelta));
+
   const out = document.createElement("canvas");
-  out.width = W; out.height = H;
+  out.width = W;
+  out.height = newH;
   const oc = out.getContext("2d");
 
-  // UV positions of control points in cutout
-  const eyeTopU  = Math.max(0.05, screenToU(eyeTopY));
-  const eyeBotU  = Math.min(0.95, screenToU(eyeBotY));
-  const mTopU    = Math.max(0.05, screenToU(mTopY));
-  const mBotU    = Math.min(0.95, screenToU(mBotY));
+  // 5 bands: [top of image → eye top] [eye band] [eye bot → mouth top] [mouth band] [mouth bot → bottom]
+  let destY = 0;
 
-  // Eye band height in cutout pixels
-  const eyeTopPx = eyeTopU * H;
-  const eyeBotPx = eyeBotU * H;
-  const eyeBandH = eyeBotPx - eyeTopPx;
-
-  // Mouth band height in cutout pixels
-  const mTopPx   = mTopU * H;
-  const mBotPx   = mBotU * H;
-  const mBandH   = mBotPx - mTopPx;
-
-  // Squish factor for eyes (blink=1 → height near 0)
-  const eyeSquish = 1 - blink * 0.92;
-  // Stretch factor for mouth (jaw=1 → 60% taller)
-  const mStretch  = 1 + jaw * 0.6;
-
-  // We'll render 5 bands: top, eye, mid, mouth, bottom
-  // Each band maps src rows → dst rows with possible scale
-
-  const bands = [
-    { sy: 0,        sh: eyeTopPx,           dy: 0,        dh: eyeTopPx },
-    { sy: eyeTopPx, sh: eyeBandH,           dy: eyeTopPx, dh: eyeBandH * eyeSquish },
-    { sy: eyeBotPx, sh: mTopPx - eyeBotPx,  dy: eyeTopPx + eyeBandH * eyeSquish, dh: mTopPx - eyeBotPx },
-    { sy: mTopPx,   sh: mBandH,             dy: 0, dh: mBandH * mStretch }, // dy set below
-    { sy: mBotPx,   sh: H - mBotPx,         dy: 0, dh: H - mBotPx },        // dy set below
-  ];
-
-  // Fix dy for bands after the eye squish shift
-  const eyeShift = eyeBandH * eyeSquish - eyeBandH; // negative (squished)
-  bands[2].dy = eyeBotPx + eyeShift;
-  bands[3].dy = bands[2].dy + bands[2].dh;
-  bands[4].dy = bands[3].dy + bands[3].dh;
-
-  for (const b of bands) {
-    if (b.sh <= 0 || b.dh <= 0) continue;
-    oc.drawImage(cutout, 0, b.sy, W, b.sh, 0, b.dy, W, b.dh);
+  function blitBand(srcY, srcH, dstH) {
+    if (srcH <= 0 || dstH <= 0) return;
+    oc.drawImage(cutout, 0, srcY, W, srcH, 0, destY, W, dstH);
+    destY += dstH;
   }
+
+  blitBand(0,         eyeTopPx,                 eyeTopPx);                        // top section — unchanged
+  blitBand(eyeTopPx,  eyeBandH,                 eyeBandH * eyeSquish);             // eye band — squished
+  blitBand(eyeBotPx,  mTopPx - eyeBotPx,        mTopPx - eyeBotPx);               // mid section — unchanged
+  blitBand(mTopPx,    mBandH,                   mBandH  * mStretch);               // mouth band — stretched
+  blitBand(mBotPx,    H - mBotPx,               H - mBotPx);                       // bottom section — unchanged
 
   return out;
 }
 
+// ── Draw mask (animation only fires when locked) ──────────────────────────────
 function drawMaskAnimated() {
   if (!attached || !cutout || !face) return;
 
   const box = maskRect(face);
+
+  // Warp happens in cutout pixel space — completely independent of canvas rotation
+  const src = locked ? warpCutoutImage(box) : cutout;
+
   const mX = box.cx - box.dw / 2;
   const mY = box.cy - box.dh / 2;
 
@@ -175,10 +146,7 @@ function drawMaskAnimated() {
   ctx.translate(box.cx, box.cy);
   ctx.rotate(box.angle);
   ctx.translate(-box.cx, -box.cy);
-
-  const src = locked ? buildWarpedMask(box) : cutout;
   ctx.drawImage(src, mX, mY, box.dw, box.dh);
-
   ctx.restore();
 }
 
@@ -247,7 +215,10 @@ function sizeCanvases() {
 window.addEventListener("resize", sizeCanvases);
 sizeCanvases();
 
-function unlockPhotos() { photoBtn.classList.remove("locked"); photoInput.disabled = false; }
+function unlockPhotos() {
+  photoBtn.classList.remove("locked");
+  filePhoto.disabled = false;
+}
 
 function coverRect() {
   const cw = view.width, ch = view.height;
@@ -306,7 +277,11 @@ function cropAlpha(src) {
   out.getContext("2d").drawImage(src,minX,minY,out.width,out.height,0,0,out.width,out.height);
   return out;
 }
-function rebuildCutout() { if (!photoSource) return; cutout=floodCutout(photoSource,Number(cutoutInput.value)); previewImg.src=cutout.toDataURL("image/png"); }
+function rebuildCutout() {
+  if (!photoSource) return;
+  cutout=floodCutout(photoSource,Number(cutoutInput.value));
+  previewImg.src=cutout.toDataURL("image/png");
+}
 function drawSource(imgLike) {
   const width=imgLike.width||2, height=imgLike.height||2;
   const scale=Math.min(1,720/Math.max(width,height));
@@ -377,17 +352,25 @@ async function initTracker() {
 
 async function startCamera() {
   if (running) return;
+  // Try with mic first, silently fall back to video-only — no toast
   try {
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:1280},height:{ideal:720}},audio:{echoCancellation:true,noiseSuppression:true}});
-  } catch(err) {
-    try { stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false}); toast("Mic blocked — video only"); }
-    catch(err2) { setStatus("Allow camera access"); toast("Camera permission blocked"); return; }
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode:"user", width:{ideal:1280}, height:{ideal:720} },
+      audio: { echoCancellation:true, noiseSuppression:true },
+    });
+  } catch(_) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"user" }, audio:false });
+    } catch(err2) {
+      setStatus("Allow camera access");
+      return;
+    }
   }
   video.srcObject=stream; await video.play();
   if (!landmarker) await initTracker();
   running=true; btnCam.textContent="Camera on"; unlockPhotos();
   setStatus("Face mapping — look at camera, then pick a photo");
-  toast(stream.getAudioTracks().length?"Camera + mic on":"Camera on");
+  toast("Camera on");
 }
 
 function attach() {
@@ -439,7 +422,7 @@ function startRec() {
   recChunks=[]; compositeTo(recCtx); recorder=pickRecorder();
   recorder.ondataavailable=e=>{ if(e.data&&e.data.size) recChunks.push(e.data); };
   recorder.start(200); btnRec.hidden=true; btnStop.hidden=false;
-  btnStop.textContent="Stop & save to Photos"; setStatus("Recording…");
+  btnStop.textContent="Stop & save"; setStatus("Recording…");
 }
 function makeFile() {
   const raw=recorder?.mimeType||recChunks[0]?.type||"video/mp4";
@@ -456,8 +439,12 @@ function showSaveSheet(file) {
 async function shareToPhotos(file) {
   if (!file) return false;
   try {
-    if (navigator.canShare&&navigator.canShare({files:[file]})) { await navigator.share({files:[file],title:"MASKLAB"}); toast("Pick Save Video"); return true; }
-    if (navigator.share) { await navigator.share({files:[file],title:"MASKLAB"}); toast("Pick Save Video"); return true; }
+    if (navigator.canShare&&navigator.canShare({files:[file]})) {
+      await navigator.share({files:[file],title:"MASKLAB"}); toast("Pick Save Video"); return true;
+    }
+    if (navigator.share) {
+      await navigator.share({files:[file],title:"MASKLAB"}); toast("Pick Save Video"); return true;
+    }
   } catch(err) { if(err&&err.name==="AbortError") return true; }
   return false;
 }
@@ -476,21 +463,23 @@ btnAttach.addEventListener("click",attach);
 btnLock.addEventListener("click",lockFit);
 btnRec.addEventListener("click",startRec);
 btnStop.addEventListener("click",stopRec);
-photoInput.addEventListener("change",async()=>{
-  const file=photoInput.files?.[0]; if(!file) return;
+
+filePhoto.addEventListener("change", async () => {
+  const file = filePhoto.files?.[0]; if (!file) return;
   try {
     setStatus("Cutting photo…");
     const decoded=await decodePhoto(file); photoSource=drawSource(decoded);
-    if(decoded.close) decoded.close();
+    if (decoded.close) decoded.close();
     rebuildCutout(); persistPhoto();
     previewEl.hidden=false; previewLabel.textContent="Cutout ready — Attach";
     btnAttach.disabled=false; attached=false; locked=false;
     btnLock.disabled=true; btnLock.textContent="4. Lock"; btnRec.disabled=true;
     setStatus(face?"Tap Attach":"Look at camera, then Attach");
-    toast("Saved locally — tap Attach");
+    toast("Saved — tap Attach");
   } catch(err) { console.error(err); toast("Could not read that photo — try a screenshot"); }
 });
-cutoutInput.addEventListener("input",rebuildCutout);
+
+cutoutInput.addEventListener("input", rebuildCutout);
 renderLibrary();
 loop();
 setStatus("1 / 5 — Start camera");
